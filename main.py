@@ -34,7 +34,7 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    filters, ContextTypes, Application
+    filters, ContextTypes, Application, JobQueue  # ✅ Added JobQueue
 )
 from telegram.constants import ParseMode
 from telegram.error import TelegramError, Forbidden, BadRequest
@@ -42,10 +42,9 @@ from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.collection import Collection
 from pymongo.errors import PyMongoError, ConnectionFailure
 from logging.handlers import RotatingFileHandler
+import pytz  # ✅ NEW: For timezone support
 
-from telegram.ext import ApplicationBuilder, JobQueue  # Add JobQueue import
-import pytz  # For timezone support
-
+def setup_application() -> Application:
 def setup_application() -> Application:
     """Setup and configure the application"""
     global application
@@ -165,6 +164,7 @@ def setup_application() -> Application:
     application.add_error_handler(error_handler)
     
     return application
+
 
 # === PRODUCTION CONFIGURATION ===
 class BotConfig:
