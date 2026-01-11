@@ -1934,7 +1934,7 @@ async def handle_captcha_callback(update: Update, context: ContextTypes.DEFAULT_
                 pass
             return
         
-        if str(answer) == str(captcha["answer"]):
+        if str(answer) == int(captcha["answer"]):
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
                 user_id=user_id,
