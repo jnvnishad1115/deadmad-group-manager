@@ -2895,83 +2895,73 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin_user = is_owner or (chat.type != "private" and await is_admin(chat, user.id))
     
     help_text = """
-❖══════════════════════════❖
- 🤖 <b>𝑮𝑹𝑶𝑼𝑷 𝑴𝑨𝑵𝑨𝑮𝑬𝑹 𝑩𝑶𝑻</b>
-  <b>𝑹𝑶𝒀𝑨𝑳 𝑯𝑬𝑳𝑷 𝑯𝑨𝑳𝑳</b>
-❖══════════════════════════❖
+🤖 <b>Group Manager Bot - Help</b>
 
-✦━━━━━━━━━━━━━━━━━━━━✦
-📖 <b>𝑮𝑬𝑵𝑬𝑹𝑨𝑳 𝑪𝑶𝑴𝑴𝑨𝑵𝑫𝑺</b>
-✦━━━━━━━━━━━━━━━━━━━━✦
-◆ <code>/start</code> — Start the bot  
-◆ <code>/help</code> — Show help  
-◆ <code>/rules</code> — Group rules  
-◆ <code>/id</code> — User & Chat ID  
-◆ <code>/poll</code> — Create poll  
-◆ <code>/quiz</code> — Create quiz  
-◆ <code>/roll</code> — Roll dice  
-◆ <code>/leaderboard</code> — Active members  
-◆ <code>/stats</code> — Group statistics  
-
-✦━━━━━━━━━━━━━━━━━━━━✦
+<b>📖 General Commands:</b>
+/start - Start the bot
+/help - Show this help
+/rules - View group rules
+/id - Get user and chat ID
+/poll - Create a poll
+/quiz - Create a quiz
+/roll - Roll a dice
+/leaderboard - Top active members
+/stats - Group statistics
 """
 
-if is_admin_user:
+if is_admin_user:  
     help_text += """
-👑 <b>𝑨𝑫𝑴𝑰𝑵 𝑪𝑯𝑨𝑴𝑩𝑬𝑹</b>
 
-⚔ <b>𝑴𝑶𝑫𝑬𝑹𝑨𝑻𝑰𝑶𝑵</b>
-◆ <code>/ban &lt;user&gt; [reason]</code>  
-◆ <code>/unban &lt;user_id&gt;</code>  
-◆ <code>/mute &lt;user&gt; [duration]</code>  
-◆ <code>/unmute &lt;user&gt;</code>  
-◆ <code>/kick &lt;user&gt; [reason]</code>  
-◆ <code>/warn &lt;user&gt; [reason]</code>  
-◆ <code>/unwarn &lt;user&gt;</code>  
-◆ <code>/warnings &lt;user&gt;</code>  
-◆ <code>/purge [count]</code>  
-◆ <code>/promote &lt;user&gt;</code>  
-◆ <code>/demote &lt;user&gt;</code>  
+<b>👑 Admin Commands:</b>
 
-🛡 <b>𝑺𝑬𝑪𝑼𝑹𝑰𝑻𝒀</b>
-◆ <code>/antiflood</code>  
-◆ <code>/setflood &lt;limit&gt; &lt;time&gt;</code>  
-◆ <code>/automod</code>  
-◆ <code>/antilink</code>  
-◆ <code>/antiswear</code>  
-◆ <code>/setbadwords &lt;words...&gt;</code>  
-◆ <code>/captcha</code>  
-◆ <code>/setcaptcha &lt;timeout&gt;</code>  
+<b>🔨 Moderation:</b>
+/ban <user> [reason] - Ban user
+/unban <user_id> - Unban user
+/mute <user> [duration] - Mute user
+/unmute <user> - Unmute user
+/kick <user> [reason] - Kick user
+/warn <user> [reason] - Warn user
+/unwarn <user> - Remove warning
+/warnings <user> - View warnings
+/purge [count] - Delete messages
+/promote <user> - Make admin
+/demote <user> - Remove admin
 
-📜 <b>𝑮𝑹𝑶𝑼𝑷 𝑴𝑨𝑵𝑨𝑮𝑬𝑴𝑬𝑵𝑻</b>
-◆ <code>/setrules &lt;text&gt;</code>  
-◆ <code>/setwelcome &lt;text&gt;</code>  
-◆ <code>/welcome on/off</code>  
-◆ <code>/setgoodbye &lt;text&gt;</code>  
-◆ <code>/goodbye on/off</code>  
-◆ <code>/note &lt;name&gt; &lt;text&gt;</code>  
-◆ <code>/get &lt;name&gt;</code>  
-◆ <code>/delnote &lt;name&gt;</code>  
-◆ <code>/filter &lt;kw&gt; &lt;response&gt;</code>  
-◆ <code>/stop &lt;kw&gt;</code>  
-◆ <code>/setmaxwarn &lt;n&gt;</code>  
-◆ <code>/settings</code>  
+<b>🛡️ Security:</b>
+/antiflood - Toggle anti-flood
+/setflood <limit> <time> - Configure flood
+/automod - Toggle auto-moderation
+/antilink - Toggle link blocking
+/antiswear - Toggle bad words
+/setbadwords <words...> - Set custom bad words
+/captcha - Toggle CAPTCHA
+/setcaptcha <timeout> - Configure CAPTCHA
 
-✦━━━━━━━━━━━━━━━━━━━━✦
+<b>📜 Management:</b>
+/setrules <text> - Set rules
+/setwelcome <text> - Set welcome message
+/welcome on/off - Toggle welcome
+/setgoodbye <text> - Set goodbye message
+/goodbye on/off - Toggle goodbye
+/note <name> <text> - Save note
+/get <name> - Get note
+/delnote <name> - Delete note
+/filter <kw> <response> - Add filter
+/stop <kw> - Remove filter
+/setmaxwarn <n> - Set max warnings
+/settings - View settings
 """
 
-if is_owner:
+if is_owner:  
     help_text += """
-👑 <b>𝑶𝑾𝑵𝑬𝑹 𝑻𝑯𝑹𝑶𝑵𝑬</b>
-◆ <code>/broadcast &lt;message&gt;</code>  
-◆ <code>/leave &lt;group_id&gt;</code>  
-◆ <code>/logs</code>  
-◆ <code>/resetgroup</code>  
-◆ <code>/shutdown</code>  
-◆ <code>/ping</code>  
 
-❖══════════════════════════❖
-✨ <b>Royal • Secure • Authoritative</b>
+<b>👑 Owner Commands:</b>
+/broadcast <message> - Broadcast to all groups
+/leave <group_id> - Leave group
+/logs - View bot logs
+/resetgroup - Reset current group
+/shutdown - Stop bot gracefully
+/ping - Check latency
 """
     
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
