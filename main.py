@@ -46,7 +46,7 @@ class BotConfig(BaseSettings):
 
     # REQUIRED (NO DEFAULTS FOR SECRETS)
     bot_token: str = "8290310263:AAGnseEQA6qyXk8lqFbTf4vqNdKzJKZq0tg"
-    admin_id: int = 8149151609
+    admin_id: int = 407295878
     mongodb_uri: str =  "mongodb+srv://mefirebase1115_db_user:f76qFi3OqJQsagU2@cluster0.wsppssu.mongodb.net/?appName=Cluster0"
 
     # Optional with defaults
