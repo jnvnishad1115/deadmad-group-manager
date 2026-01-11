@@ -3472,8 +3472,39 @@ def main():
     """Main entry point"""
     global application
     
+    # Create application
     application = setup_application()
-    application.lifespan = lifespan
+    
+    # ✅ FIX: Use post_init instead of lifespan attribute
+    async def post_init(app: Application) -> None:
+        """Called after application is initialized"""
+        logger.info("Bot starting up...")
+        
+        is_valid, errors = config.validate()
+        if not is_valid:
+            logger.critical(f"Configuration errors: {errors}")
+            sys.exit(1)
+        
+        config.log_config(logger)
+        
+        try:
+            mongo.bot_stats.update_one(
+                {"date": datetime.utcnow().date().isoformat()},
+                {"$inc": {"starts": 1}},
+                upsert=True
+            )
+            logger.info("Bot stats updated")
+        except PyMongoError as e:
+            logger.error(f"Failed to update bot stats: {e}")
+    
+    application.post_init = post_init
+    
+    # Optional: Add shutdown cleanup
+    async def post_stop(app: Application) -> None:
+        """Called after application stops"""
+        logger.info("Bot shutting down...")
+    
+    application.post_stop = post_stop
     
     logger.info("Bot starting...")
     application.run_polling(
@@ -3483,10 +3514,11 @@ def main():
     )
 
 if __name__ == "__main__":
-    try:
+    try :
         main()
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
-        logger.critical(f"Fatal error: {e}", exc_info=True)
+        logger.critical (f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
+
