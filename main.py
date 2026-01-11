@@ -901,6 +901,47 @@ async def reset_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await confirm_msg.edit_text("❌ Reset cancelled (timeout).")
         context.user_data.pop('pending_reset', None)
 
+
+@owner_only()
+async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all groups where bot is active"""
+    try:
+        groups = await mongo.db.groups.find({}).sort("id", 1).to_list(None)
+        
+        if not groups:
+            await update.message.reply_text("❌ No groups found in database.")
+            return
+        
+        text = f"📊 <b>Bot Active Groups: {len(groups)}</b>\n\n"
+        
+        for i, group in enumerate(groups, 1):
+            title = escape_html(group.get('title', 'N/A'))
+            group_id = group.get('id', 'N/A')
+            
+            # Format date if available
+            added_at = group.get('bot_added_at')
+            if added_at:
+                date_str = added_at.strftime('%Y-%m-%d %H:%M UTC') if isinstance(added_at, datetime) else str(added_at)
+            else:
+                date_str = "Unknown"
+            
+            text += f"{i}. <b>{title}</b>\n"
+            text += f"   ID: <code>{group_id}</code>\n"
+            text += f"   Added: {date_str}\n\n"
+            
+            # Avoid Telegram's 4096 char limit
+            if len(text) > 3500:
+                await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+                text = ""
+        
+        if text:
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+            
+    except Exception as e:
+        logger.error(f"List groups failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
 @owner_only()
 async def handle_reset_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process reset confirmation"""
@@ -1815,11 +1856,45 @@ async def set_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =============================================================================
 
 async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle new members + auto-register bot when added"""
     message = update.effective_message
     chat = update.effective_chat
+    
+    if not message or not chat:
+        return
+    
+    bot_info = await context.bot.get_me()
 
     for member in message.new_chat_members:
-
+        # ──────────────────────────────────────────────
+        # FIX: Register group when bot is added
+        # ──────────────────────────────────────────────
+        if member.id == bot_info.id:
+            await mongo.db.groups.update_one(
+                {"id": chat.id},
+                {"$set": {
+                    "id": chat.id,
+                    "title": chat.title,
+                    "type": chat.type,
+                    "bot_added_at": datetime.now(timezone.utc)
+                }},
+                upsert=True
+            )
+            await group_cache.delete(f"group_{chat.id}")
+            logger.info(f"✅ Bot registered in group: {chat.title} ({chat.id})")
+            
+            try:
+                await message.reply_text(
+                    "🤖 Bot is ready! Use /settings to configure.",
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
+            continue
+        
+        # ──────────────────────────────────────────────
+        # Anti-bot feature for other bots
+        # ──────────────────────────────────────────────
         if member.is_bot:
             group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
             if group_data.get("anti_bot_enabled", False):
@@ -1832,28 +1907,31 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except:
                     pass
             continue
-
+        
+        # ──────────────────────────────────────────────
+        # Existing CAPTCHA logic for human members
+        # ──────────────────────────────────────────────
         await mongo.db.users.update_one(
             {"id": member.id},
             {"$set": {
                 "id": member.id,
                 "first_name": member.first_name,
-                "username": member.username,
+                "username": member.username.lower() if member.username else None,
                 "last_seen": datetime.now(timezone.utc)
             }},
             upsert=True
         )
-
+        
         group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
-
+        
         if not group_data.get("captcha_enabled", False):
             await _send_welcome(chat, member, context)
             continue
-
+        
         if not await bot_can_restrict_members(chat, context):
-            await message.reply_text("❌ CAPTCHA requires Restrict Members permission.")
+            await message.reply_text("❌ CAPTCHA requires 'Restrict Members' permission.")
             return
-
+        
         try:
             await chat.restrict_member(
                 member.id,
@@ -1861,17 +1939,17 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         except:
             pass
-
+        
         num1, num2 = random.randint(1, 20), random.randint(1, 20)
         correct = num1 + num2
-
+        
         options = set([correct])
         while len(options) < 5:
             options.add(correct + random.randint(-5, 5))
-
+        
         options = list(options)
         random.shuffle(options)
-
+        
         buttons = [
             [InlineKeyboardButton(
                 str(opt),
@@ -1879,17 +1957,17 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )]
             for opt in options
         ]
-
+        
         timeout = group_data.get("captcha_timeout", config.captcha_timeout)
-
+        
         captcha_msg = await message.reply_text(
-            f"🧩 <b>Welcome {member.first_name}!</b>\n\n"
+            f"🧩 <b>Welcome {escape_html(member.first_name)}!</b>\n\n"
             f"Solve to unlock:\n<code>{num1} + {num2} = ?</code>\n\n"
             f"⏰ Timeout: {timeout}s",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML
         )
-
+        
         await mongo.db.captchas.insert_one({
             "user_id": member.id,
             "group_id": chat.id,
@@ -1897,7 +1975,7 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "message_id": captcha_msg.message_id,
             "expires_at": datetime.now(timezone.utc) + timedelta(seconds=timeout)
         })
-
+        
         context.job_queue.run_once(
             auto_kick_if_failed,
             timeout,
@@ -3156,6 +3234,7 @@ def setup_application() -> Application:
     application.add_handler(CommandHandler("resetgroup", reset_group_command))
     application.add_handler(CommandHandler("confirm", handle_reset_confirmation))
     application.add_handler(CommandHandler("shutdown", shutdown_bot, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("listgroups", list_groups, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("ping", ping_bot))
     
     # Admin moderation
