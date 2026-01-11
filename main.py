@@ -786,7 +786,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             await context.bot.send_message(
                 chat_id=target_chat_id,
-                text=f"📢 <b>Broadcast</b>\n\n{escape_html(message)}",
+                text=f"{escape_html(message)}",
                 parse_mode=ParseMode.HTML
             )
             success_count += 1
@@ -3212,7 +3212,7 @@ async def send_leaderboard(chat: Chat, message: Message, timeframe: str, edit: b
                 name = f"User({user_id})"
             
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"<code>{i}.</code>")
-            board_text += f"{medal} {name} — <b>{count}</b> msgs\n"
+            board_text += f"{medal} {name} — <b>{count}</b>\n"
     
     board_text += "\n━━━━━━━━━━━━━━━━━━"
     
