@@ -2618,10 +2618,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin_user = is_owner or (chat.type != "private" and await is_admin(chat, user.id))
     
     help_text = """
-❖══════════════════════════❖
+❖════════════════════════❖
  🤖 <b>GROUP MANAGER BOT</b>
   <b>HELP HALL</b>
-❖══════════════════════════❖
+❖════════════════════════❖
 
 ✦━━━━━━━━━━━━━━━━━━━━✦
 📖 <b>GENERAL COMMANDS</b>
