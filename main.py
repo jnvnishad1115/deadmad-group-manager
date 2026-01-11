@@ -34,20 +34,21 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 from motor.motor_asyncio import AsyncIOMotorClient
 from motor.core import AgnosticCollection as Collection
 import pytz
-from pydantic import BaseSettings, Field, validator
-
+from pydantic import Field
+from pydantic_settings import BaseSettings
+from pydantic import field_validator
 # =============================================================================
 # CONFIGURATION - SECURE BY DESIGN
 # =============================================================================
 
 class BotConfig(BaseSettings):
     """Secure configuration from environment variables"""
-    
-    # Required
+
+    # REQUIRED (NO DEFAULTS FOR SECRETS)
     bot_token: str = "8290310263:AAGnseEQA6qyXk8lqFbTf4vqNdKzJKZq0tg"
     admin_id: int = 8149151609
-    mongodb_uri: str = "mongodb+srv://mefirebase1115_db_user:f76qFi3OqJQsagU2@cluster0.wsppssu.mongodb.net/?appName=Cluster0"
-    
+    mongodb_uri: str =  "mongodb+srv://mefirebase1115_db_user:f76qFi3OqJQsagU2@cluster0.wsppssu.mongodb.net/?appName=Cluster0"
+
     # Optional with defaults
     database_name: str = Field(default="telegram_bot", env="DATABASE_NAME")
     debug: bool = Field(default=False, env="DEBUG")
@@ -62,22 +63,29 @@ class BotConfig(BaseSettings):
     log_file_backup_count: int = Field(default=5, env="LOG_FILE_BACKUP_COUNT")
     cache_ttl_seconds: int = Field(default=300, env="CACHE_TTL_SECONDS")
     max_cache_size: int = Field(default=1000, env="MAX_CACHE_SIZE")
-    
-    @validator("max_warnings")
-    def validate_max_warnings(cls, v):
+
+    # ✅ Pydantic v2 validators
+    @field_validator("max_warnings")
+    @classmethod
+    def validate_max_warnings(cls, v: int) -> int:
         if not 2 <= v <= 10:
             raise ValueError("max_warnings must be between 2-10")
         return v
-    
-    @validator("captcha_timeout")
-    def validate_captcha_timeout(cls, v):
+
+    @field_validator("captcha_timeout")
+    @classmethod
+    def validate_captcha_timeout(cls, v: int) -> int:
         if not 30 <= v <= 600:
             raise ValueError("captcha_timeout must be between 30-600 seconds")
         return v
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+
+    # ✅ Pydantic v2 config
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore"
+    }
+
 
 config = BotConfig()
 
