@@ -7,7 +7,7 @@ pydantic-settings==2.7.1
 # ==============================
 # Telegram Bot Framework
 # ==============================
-python-telegram-bot==22.5
+python-telegram-bot[job-queue]==22.5
 
 # ==============================
 # Networking / Async
