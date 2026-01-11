@@ -3221,9 +3221,14 @@ def setup_application() -> Application:
         handle_admin_tag
     ), group=4)
     
-    application.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^captcha_"))
-    application.add_handler(CallbackQueryHandler(handle_callback_query, pattern=r"^(?!captcha_)"))
-    # Error handler
+    application.add_handler(
+        CallbackQueryHandler(captcha_callback, pattern=r"^captcha_")
+    )
+
+    # ✅ All other buttons (MUST BE AFTER)
+    application.add_handler(
+        CallbackQueryHandler(handle_callback_query)
+    )
     application.add_error_handler(error_handler)
     
     return application
