@@ -45,7 +45,6 @@ from logging.handlers import RotatingFileHandler
 import pytz  # ✅ NEW: For timezone support
 
 def setup_application() -> Application:
-def setup_application() -> Application:
     """Setup and configure the application"""
     global application
     
