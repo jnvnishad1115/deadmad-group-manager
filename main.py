@@ -3221,14 +3221,18 @@ def setup_application() -> Application:
         handle_admin_tag
     ), group=4)
     
+    # group 0 → CAPTCHA (highest priority)
     application.add_handler(
-        CallbackQueryHandler(captcha_callback, pattern=r"^captcha_")
+        CallbackQueryHandler(captcha_callback, pattern=r"^captcha_"),
+        group=0
     )
 
-    # ✅ All other buttons (MUST BE AFTER)
+# group 1 → all other buttons
     application.add_handler(
-        CallbackQueryHandler(handle_callback_query)
+        CallbackQueryHandler(handle_callback_query),
+        group=1
     )
+    
     application.add_error_handler(error_handler)
     
     return application
