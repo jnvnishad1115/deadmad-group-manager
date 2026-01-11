@@ -1903,38 +1903,35 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
             }
         )
 
-async def handle_captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle CAPTCHA answer"""
+async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    data = query.data.split("_")
-    
-    if len(data) != 4:
-        await query.answer("❌ Invalid CAPTCHA.", show_alert=True)
-        return
-    
-    _, user_id_str, chat_id_str, answer = data
-    user_id, chat_id = int(user_id_str), int(chat_id_str)
-    
-    if query.from_user.id != user_id:
-        await query.answer("❌ This CAPTCHA is not for you!", show_alert=True)
-        return
-    
+    await query.answer()
+
     try:
+        _, user_id, chat_id, selected = query.data.split("_")
+        user_id = int(user_id)
+        chat_id = int(chat_id)
+        selected = int(selected)
+
+        # 🚫 Prevent other users
+        if query.from_user.id != user_id:
+            await query.answer("❌ This CAPTCHA is not for you.", show_alert=True)
+            return
+
         captcha = await mongo.db.captchas.find_one({
             "user_id": user_id,
-            "group_id": chat_id,
-            "expires_at": {"$gt": datetime.now(timezone.utc)}
+            "group_id": chat_id
         })
-        
+
+        # ⏰ Expired / already solved
         if not captcha:
-            await query.answer("❌ Expired or invalid CAPTCHA!", show_alert=True)
-            try:
-                await query.message.delete()
-            except:
-                pass
+            await query.edit_message_text("⚠️ CAPTCHA expired or already verified.")
             return
-        
-        if str(answer) == int(captcha["answer"]):
+
+        correct_answer = int(captcha["answer"])
+
+        if selected == correct_answer:
+            # ✅ Unlock user
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -1946,15 +1943,14 @@ async def handle_captcha_callback(update: Update, context: ContextTypes.DEFAULT_
                     can_add_web_page_previews=True
                 )
             )
-            
-            await query.answer("✅ Verified!", show_alert=True)
-            try:
-                await query.message.delete()
-            except:
-                pass
-            
+
+            # 🧹 Remove captcha first (important)
             await mongo.db.captchas.delete_one({"_id": captcha["_id"]})
-            
+
+            # 🧹 Remove buttons (important)
+            await query.edit_message_text("✅ CAPTCHA passed! Welcome 🎉")
+
+            # 🎉 Send welcome
             user_data = await mongo.db.users.find_one({"id": user_id}) or {}
             member = User(
                 id=user_id,
@@ -1964,46 +1960,50 @@ async def handle_captcha_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             chat_obj = await context.bot.get_chat(chat_id)
             await _send_welcome(chat_obj, member, context)
+
+            return  # ⛔ STOP HERE
+
         else:
             await query.answer("❌ Wrong answer! Try again.", show_alert=True)
-            
+
     except Exception as e:
         logger.error(f"CAPTCHA verification failed: {e}", exc_info=True)
         await query.answer("❌ Error verifying. Contact admin.", show_alert=True)
 
 async def auto_kick_if_failed(context: ContextTypes.DEFAULT_TYPE):
-    """Auto-kick on CAPTCHA timeout"""
     job_data = context.job.data
-    
+
     try:
         captcha = await mongo.db.captchas.find_one({
             "user_id": job_data["user_id"],
             "group_id": job_data["chat_id"],
-            "expires_at": {"$lt": datetime.now(timezone.utc)}
+            "expires_at": {"$lte": datetime.now(timezone.utc)}
         })
-        
-        if captcha:
-            await context.bot.ban_chat_member(
-                chat_id=job_data["chat_id"],
-                user_id=job_data["user_id"]
-            )
-            
-            await context.bot.send_message(
+
+        if not captcha:
+            return  # ✅ Already solved
+
+        await context.bot.ban_chat_member(
+            chat_id=job_data["chat_id"],
+            user_id=job_data["user_id"]
+        )
+
+        await context.bot.send_message(
+            job_data["chat_id"],
+            f"⏰ <b>Time's up!</b> User {job_data['user_id']} failed CAPTCHA.",
+            parse_mode=ParseMode.HTML
+        )
+
+        try:
+            await context.bot.delete_message(
                 job_data["chat_id"],
-                f"⏰ <b>Time's up!</b> User {job_data['user_id']} failed CAPTCHA.",
-                parse_mode=ParseMode.HTML
+                job_data["message_id"]
             )
-            
-            try:
-                await context.bot.delete_message(
-                    job_data["chat_id"],
-                    job_data["message_id"]
-                )
-            except:
-                pass
-            
-            await mongo.db.captchas.delete_one({"_id": captcha["_id"]})
-            
+        except:
+            pass
+
+        await mongo.db.captchas.delete_one({"_id": captcha["_id"]})
+
     except Exception as e:
         logger.error(f"Auto-kick failed: {e}", exc_info=True)
 
