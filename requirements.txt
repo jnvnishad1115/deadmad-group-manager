@@ -1,31 +1,8 @@
-# Telegram Bot
-python-telegram-bot==20.8
+# Core dependencies with Python 3.13 support
+pydantic==2.10.4          # Latest stable with full 3.13 support
+pydantic-settings==2.7.1  # Compatible with pydantic 2.10
+pydantic-core==2.27.0     # Explicitly specify working core version
 
-# Database
-motor==3.3.2
-pymongo==4.6.0
-dnspython>=2.4.2
-
-# Config & Env
-python-dotenv==1.0.0
-pydantic==2.5.3
-pydantic-settings==2.1.0
-
-# Networking
-aiohttp==3.9.1
-httpx==0.26.0
-
-# Logging
-structlog==23.2.0
-
-# Timezone
-pytz==2023.3.post1
-
-# Rate limiting (PTB extra)
-aiolimiter==1.1.1
-
-# Scheduler (PTB extra)
-APScheduler==3.10.4
-
-# Production safety
-typing-extensions>=4.6.1
+# Also consider updating these for better 3.13 compatibility
+aiohttp>=3.10.0           # 3.9.x has known issues with 3.13
+python-telegram-bot>=21.0 # Better Python 3.13 support
