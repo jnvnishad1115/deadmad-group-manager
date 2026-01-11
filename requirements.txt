@@ -1,24 +1,31 @@
-# Core Telegram Bot
-python-telegram-bot[all]==20.8
+# Telegram Bot
+python-telegram-bot==20.8
 
-# MongoDB Async
+# Database
 motor==3.3.2
-pymongo==4.6.0  # Motor dependency
+pymongo==4.6.0
+dnspython>=2.4.2
 
-# Configuration
+# Config & Env
+python-dotenv==1.0.0
 pydantic==2.5.3
 pydantic-settings==2.1.0
-python-dotenv==1.0.0
 
-# Time & Dates
-pytz==2023.3.post1
-
-# Async Support
+# Networking
 aiohttp==3.9.1
+httpx==0.26.0
 
 # Logging
 structlog==23.2.0
 
-# Development Tools (optional)
-pytest==7.4.3
-pytest-asyncio==0.21.1
+# Timezone
+pytz==2023.3.post1
+
+# Rate limiting (PTB extra)
+aiolimiter==1.1.1
+
+# Scheduler (PTB extra)
+APScheduler==3.10.4
+
+# Production safety
+typing-extensions>=4.6.1
