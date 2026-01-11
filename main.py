@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # =============================================================================
-# PRODUCTION-READY TELEGRAM GROUP MANAGER BOT v2.1
-# Features: CAPTCHA, Anti-Flood, Auto-Mod, Warnings, Leaderboard with Stats, @admin Tagging
+# PRODUCTION-READY TELEGRAM GROUP MANAGER BOT v2.2
+# Fixed: Message deletion errors, datetime deprecations, stability
 # =============================================================================
 
 import os
@@ -14,7 +14,7 @@ import logging
 import random
 import time
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import defaultdict
 from functools import wraps
@@ -195,7 +195,7 @@ class MongoDB:
                 "group_id": group_id,
                 "reason": reason,
                 "warned_by": warned_by,
-                "timestamp": datetime.utcnow(),
+                "timestamp": datetime.now(timezone.utc),
                 "active": True
             })
             return await self.get_user_warnings(user_id, group_id)
@@ -416,12 +416,19 @@ def admin_only(permission: Optional[str] = None):
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+            # SAFE NULL CHECKS
+            if not update.effective_message or not update.effective_chat or not update.effective_user:
+                return
+            
             user = update.effective_user
             chat = update.effective_chat
             message = update.effective_message
             
             if chat.type not in [Chat.GROUP, Chat.SUPERGROUP]:
-                await message.reply_text("❌ This command only works in groups.")
+                try:
+                    await message.reply_text("❌ This command only works in groups.")
+                except:
+                    pass
                 return
             
             if user.id == config.admin_id:
@@ -430,14 +437,20 @@ def admin_only(permission: Optional[str] = None):
             try:
                 member = await chat.get_member(user.id)
                 if member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
-                    await message.reply_text("❌ <b>Admin only.</b>", parse_mode=ParseMode.HTML)
+                    try:
+                        await message.reply_text("❌ <b>Admin only.</b>", parse_mode=ParseMode.HTML)
+                    except Exception as e:
+                        logger.warning(f"Failed to send admin error {e}")
                     return
                 
                 return await func(update, context, *args, **kwargs)
                 
             except TelegramError as e:
                 logger.error(f"Admin check failed in {func.__name__}: {e}")
-                await message.reply_text("❌ Permission check failed.")
+                try:
+                    await message.reply_text("❌ Permission check failed.")
+                except:
+                    pass
         
         return wrapper
     return decorator
@@ -447,6 +460,10 @@ def log_command(action: str):
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+            # SAFE NULL CHECKS
+            if not update.effective_message or not update.effective_chat or not update.effective_user:
+                return
+            
             user = update.effective_user
             chat = update.effective_chat
             message = update.effective_message
@@ -470,7 +487,7 @@ def log_command(action: str):
                         "user_id": user.id if user else None,
                         "action": action,
                         "command": message.text[:100] if message else None,
-                        "timestamp": datetime.utcnow(),
+                        "timestamp": datetime.now(timezone.utc),
                         "status": "success" if success else "failed",
                         "error": error_msg,
                         "execution_time_ms": int((time.time() - start_time) * 1000)
@@ -486,13 +503,20 @@ def rate_limit_decorator():
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+            # SAFE NULL CHECK
+            if not update.effective_user:
+                return
+            
             user_id = update.effective_user.id
             async with _tracker_lock:
                 if not check_rate_limit(user_id, _user_command_tracker):
                     remaining = config.rate_limit_period - int(time.time() - _user_command_tracker[user_id][0])
-                    await update.message.reply_text(
-                        f"⚠️ Too many commands. Please wait {remaining} seconds."
-                    )
+                    try:
+                        await update.message.reply_text(
+                            f"⚠️ Too many commands. Please wait {remaining} seconds."
+                        )
+                    except:
+                        pass
                     return
             return await func(update, context, *args, **kwargs)
         return wrapper
@@ -503,8 +527,15 @@ def owner_only():
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+            # SAFE NULL CHECK
+            if not update.effective_user:
+                return
+            
             if update.effective_user.id != config.admin_id:
-                await update.message.reply_text("❌ <b>Owner only.</b>", parse_mode=ParseMode.HTML)
+                try:
+                    await update.message.reply_text("❌ <b>Owner only.</b>", parse_mode=ParseMode.HTML)
+                except:
+                    pass
                 return
             return await func(update, context, *args, **kwargs)
         return wrapper
@@ -517,6 +548,10 @@ def owner_only():
 async def resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Tuple[Optional[User], Optional[str]]:
     """Resolve target user from reply, mention, or ID"""
     message = update.effective_message
+    
+    # SAFE NULL CHECK
+    if not message:
+        return None, "❌ No message to process."
     
     if message.reply_to_message:
         return message.reply_to_message.from_user, None
@@ -573,6 +608,10 @@ async def handle_admin_tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     
+    # SAFE NULL CHECKS
+    if not message or not user or not chat:
+        return
+    
     # Check if feature is enabled
     group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
     if not group_data.get("admin_tag_enabled", True):
@@ -584,30 +623,32 @@ async def handle_admin_tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_tag = ADMIN_TAG_CACHE.get(user.id, 0)
         if now - last_tag < ADMIN_TAG_COOLDOWN:
             remaining = ADMIN_TAG_COOLDOWN - int(now - last_tag)
-            await message.reply_text(
-                f"⚠️ Please wait {remaining} seconds before tagging admins again.",
-                parse_mode=ParseMode.HTML
-            )
+            try:
+                await message.reply_text(
+                    f"⚠️ Please wait {remaining} seconds before tagging admins again.",
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
             return
         ADMIN_TAG_CACHE[user.id] = now
     
     # Get admins
     admins = await get_group_admins(chat, context)
     if not admins:
-        await message.reply_text("❌ Could not retrieve administrators.")
+        try:
+            await message.reply_text("❌ Could not retrieve administrators.")
+        except:
+            pass
         return
     
     # Build report message for admins
-    mention_text = f"{get_user_mention(user)} tagged @admin"
-    if message.reply_to_message:
-        mention_text += " in reply to a message"
-    
     report_text = (
         f"🚨 <b>Admin Alert</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👤 <b>User:</b> {get_user_mention(user)} (ID: <code>{user.id}</code>)\n"
         f"🏢 <b>Group:</b> {escape_html(chat.title)} (ID: <code>{chat.id}</code>)\n"
-        f"🕒 <b>Time:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        f"🕒 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
     )
     
     if message.reply_to_message:
@@ -654,18 +695,25 @@ async def handle_admin_tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed_count += 1
             logger.error(f"Failed to notify admin {admin.user.id}: {e}")
     
+    # Confirm to user
     if notified_count > 0:
-        await message.reply_text(
-            f"✅ <b>Admins Notified!</b>\n"
-            f"{notified_count} administrator(s) will review your request.",
-            parse_mode=ParseMode.HTML,
-            reply_to_message_id=message.message_id
-        )
+        try:
+            await message.reply_text(
+                f"✅ <b>Admins Notified!</b>\n"
+                f"{notified_count} administrator(s) will review your request.",
+                parse_mode=ParseMode.HTML,
+                reply_to_message_id=message.message_id
+            )
+        except:
+            pass
     else:
-        await message.reply_text(
-            "❌ Could not notify administrators. They may have disabled DMs.",
-            parse_mode=ParseMode.HTML
-        )
+        try:
+            await message.reply_text(
+                "❌ Could not notify administrators. They may have disabled DMs.",
+                parse_mode=ParseMode.HTML
+            )
+        except:
+            pass
 
 @admin_only()
 async def toggle_admin_tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -805,7 +853,7 @@ async def view_bot_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         log_bytes = BytesIO(log_content.encode('utf-8'))
-        log_bytes.name = f"bot_logs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.txt"
+        log_bytes.name = f"bot_logs_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
         
         await status_msg.edit_text("📤 Sending file...")
         
@@ -877,7 +925,7 @@ async def shutdown_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         await mongo.db.bot_stats.update_one(
-            {"date": datetime.utcnow().date().isoformat()},
+            {"date": datetime.now(timezone.utc).date().isoformat()},
             {"$inc": {"shutdowns": 1}},
             upsert=True
         )
@@ -912,7 +960,7 @@ async def ping_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         stats = await mongo.db.bot_stats.find_one(
-            {"date": datetime.utcnow().date().isoformat()}
+            {"date": datetime.now(timezone.utc).date().isoformat()}
         ) or {}
     except:
         stats = {}
@@ -972,7 +1020,7 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "first_name": target_user.first_name,
                 "last_name": target_user.last_name,
                 f"banned_in.{chat.id}": True,
-                "last_updated": datetime.utcnow()
+                "last_updated": datetime.now(timezone.utc)
             }},
             upsert=True
         )
@@ -1048,7 +1096,7 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         time_arg = context.args[1] if len(context.args) > 1 else None
         duration_seconds = parse_time_string(time_arg)
-        until_date = datetime.utcnow() + timedelta(seconds=duration_seconds) if duration_seconds else None
+        until_date = datetime.now(timezone.utc) + timedelta(seconds=duration_seconds) if duration_seconds else None
         
         await chat.restrict_member(
             user_id=target_user.id,
@@ -1063,7 +1111,7 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "until": until_date,
                     "duration": duration_seconds
                 },
-                "last_updated": datetime.utcnow()
+                "last_updated": datetime.now(timezone.utc)
             }},
             upsert=True
         )
@@ -1248,14 +1296,14 @@ async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await chat.restrict_member(
                 user_id=target_user.id,
                 permissions=ChatPermissions(can_send_messages=False),
-                until_date=datetime.utcnow() + timedelta(seconds=MUTE_DURATION_WARN_MAX)
+                until_date=datetime.now(timezone.utc) + timedelta(seconds=MUTE_DURATION_WARN_MAX)
             )
             action_text = f"🔇 <b>MUTED 24 HOURS</b> (reached {max_warnings} warnings)"
         elif warnings_count == max_warnings - 1:
             await chat.restrict_member(
                 user_id=target_user.id,
                 permissions=ChatPermissions(can_send_messages=False),
-                until_date=datetime.utcnow() + timedelta(seconds=MUTE_DURATION_WARN_NEAR_MAX)
+                until_date=datetime.now(timezone.utc) + timedelta(seconds=MUTE_DURATION_WARN_NEAR_MAX)
             )
             action_text = f"🔇 <b>MUTED 1 HOUR</b> (warning {warnings_count}/{max_warnings})"
         else:
@@ -1337,7 +1385,7 @@ async def view_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 warned_by_name = "Admin"
             
-            time_ago = format_duration(int((datetime.utcnow() - warn['timestamp']).total_seconds()))
+            time_ago = format_duration(int((datetime.now(timezone.utc) - warn['timestamp']).total_seconds()))
             reason = escape_html(warn['reason'])[:50]
             warn_text += f"{i}. {reason}\n   <i>by {warned_by_name}, {time_ago}</i>\n\n"
         
@@ -1457,7 +1505,7 @@ async def antiflood_check(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await chat.restrict_member(
                     user_id=user.id,
                     permissions=ChatPermissions(can_send_messages=False),
-                    until_date=datetime.utcnow() + timedelta(seconds=MUTE_DURATION_FLOOD)
+                    until_date=datetime.now(timezone.utc) + timedelta(seconds=MUTE_DURATION_FLOOD)
                 )
                 
                 await mongo.db.logs.insert_one({
@@ -1465,7 +1513,7 @@ async def antiflood_check(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     "user_id": user.id,
                     "action": "auto_mute_flood",
                     "details": f"Sent {len(user_messages)} messages in {flood_time}s",
-                    "timestamp": datetime.utcnow()
+                    "timestamp": datetime.now(timezone.utc)
                 })
                 
                 warning_msg = await update.message.reply_text(
@@ -1640,7 +1688,7 @@ async def handle_violation(update: Update, context: ContextTypes.DEFAULT_TYPE, v
         await chat.restrict_member(
             user_id=user.id,
             permissions=ChatPermissions(can_send_messages=False),
-            until_date=datetime.utcnow() + timedelta(seconds=mute_duration)
+            until_date=datetime.now(timezone.utc) + timedelta(seconds=mute_duration)
         )
     
     await update.message.reply_text(
@@ -1780,7 +1828,7 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "id": member.id,
                 "first_name": member.first_name,
                 "username": member.username,
-                "last_seen": datetime.utcnow()
+                "last_seen": datetime.now(timezone.utc)
             }},
             upsert=True
         )
@@ -1828,8 +1876,8 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "group_id": chat.id,
             "answer": answer,
             "message_id": captcha_msg.message_id,
-            "created_at": datetime.utcnow(),
-            "expires_at": datetime.utcnow() + timedelta(
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(
                 seconds=group_data.get("captcha_timeout", config.captcha_timeout)
             )
         })
@@ -1864,7 +1912,7 @@ async def handle_captcha_callback(update: Update, context: ContextTypes.DEFAULT_
         captcha = await mongo.db.captchas.find_one({
             "user_id": user_id,
             "group_id": chat_id,
-            "expires_at": {"$gt": datetime.utcnow()}
+            "expires_at": {"$gt": datetime.now(timezone.utc)}
         })
         
         if not captcha:
@@ -1920,7 +1968,7 @@ async def auto_kick_if_failed(context: ContextTypes.DEFAULT_TYPE):
         captcha = await mongo.db.captchas.find_one({
             "user_id": job_data["user_id"],
             "group_id": job_data["chat_id"],
-            "expires_at": {"$lt": datetime.utcnow()}
+            "expires_at": {"$lt": datetime.now(timezone.utc)}
         })
         
         if captcha:
@@ -2730,7 +2778,7 @@ async def group_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "active": True
         })
         
-        week_ago = datetime.utcnow() - timedelta(days=7)
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
         recent_actions = await mongo.db.logs.count_documents({
             "group_id": chat.id,
             "timestamp": {"$gte": week_ago}
@@ -2804,7 +2852,7 @@ async def export_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 writer.writerow([user_id, "N/A", "Left group", "", warn_count])
         
         output.seek(0)
-        filename = f"stats_{chat.id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+        filename = f"stats_{chat.id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
         
         await update.message.reply_document(
             document=output.getvalue(),
@@ -2821,7 +2869,7 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _send_leaderboard(chat: Chat, message: Message, timeframe: str, edit: bool = False):
     """Enhanced leaderboard with total message counts"""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     if timeframe == "today":
         start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2832,7 +2880,7 @@ async def _send_leaderboard(chat: Chat, message: Message, timeframe: str, edit: 
         title = "This Week"
         emoji = "📅"
     else:  # lifetime
-        start_date = datetime.min
+        start_date = datetime.min.replace(tzinfo=timezone.utc)
         title = "Lifetime"
         emoji = "♾️"
     
@@ -2915,7 +2963,7 @@ async def message_logger(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "group_id": chat.id,
                 "user_id": user.id,
                 "action": "message",
-                "timestamp": datetime.utcnow()
+                "timestamp": datetime.now(timezone.utc)
             }),
             mongo.db.users.update_one(
                 {"id": user.id},
@@ -2923,7 +2971,7 @@ async def message_logger(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "username": user.username.lower() if user.username else None,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
-                    "last_seen": datetime.utcnow()
+                    "last_seen": datetime.now(timezone.utc)
                 }},
                 upsert=True
             )
@@ -3195,7 +3243,7 @@ async def post_init(app: Application) -> None:
     
     try:
         await mongo.db.bot_stats.update_one(
-            {"date": datetime.utcnow().date().isoformat()},
+            {"date": datetime.now(timezone.utc).date().isoformat()},
             {"$inc": {"starts": 1}},
             upsert=True
         )
