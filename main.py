@@ -847,10 +847,13 @@ async def view_bot_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             error = log.get('error', 'None')
             details = log.get('details', log.get('command', 'N/A'))
             
+            error_line = f"ERROR: {error}\n" if error != 'None' else ''
             log_content += (
                 f"TIME: {time_str}\nACTION: {action}\nUSER ID: {user_id}\nSTATUS: {status}\n"
-                f"{(f'ERROR: {error}\n') if error != 'None' else ''}DETAILS: {details}\n{'-'*30}\n\n"
+                f"{error_line}DETAILS: {details}\n{'-'*30}\n\n"
             )
+
+
         
         log_bytes = BytesIO(log_content.encode('utf-8'))
         log_bytes.name = f"bot_logs_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
