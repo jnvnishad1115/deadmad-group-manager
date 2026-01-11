@@ -43,6 +43,129 @@ from pymongo.collection import Collection
 from pymongo.errors import PyMongoError, ConnectionFailure
 from logging.handlers import RotatingFileHandler
 
+from telegram.ext import ApplicationBuilder, JobQueue  # Add JobQueue import
+import pytz  # For timezone support
+
+def setup_application() -> Application:
+    """Setup and configure the application"""
+    global application
+    
+    # ✅ FIXED: Initialize JobQueue
+    application = (
+        ApplicationBuilder()
+        .token(config.TOKEN)
+        .concurrent_updates(True)
+        .connection_pool_size(8)
+        .rate_limiter(None)
+        .job_queue(JobQueue())
+        .build()
+    )
+    
+    # ✅ FIXED: Start the scheduler
+    application.job_queue.scheduler.start()
+    logger.info("✅ JobQueue started successfully")
+    
+    # === MESSAGE LOGGING (Group -1) ===
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, 
+            message_logger
+        ), 
+        group=-1
+    )
+    
+    # === COMMAND HANDLERS (Group 0) ===
+    
+    # Owner-only commands
+    application.add_handler(CommandHandler("broadcast", broadcast_command, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("leave", leave_command))
+    application.add_handler(CommandHandler("logs", view_bot_logs, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("resetgroup", reset_group_command))
+    application.add_handler(CommandHandler("confirm", handle_reset_confirmation))
+    application.add_handler(CommandHandler("shutdown", shutdown_bot, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("ping", ping_bot))
+    
+    # Admin moderation commands
+    application.add_handler(CommandHandler("ban", ban_user, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("unban", unban_user, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("mute", mute_user, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("unmute", unmute_user, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("kick", kick_user, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("warn", warn_user, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("unwarn", unwarn_user, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("warnings", view_warnings, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("purge", purge_messages, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("promote", promote_user, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("demote", demote_user, filters=filters.ChatType.GROUPS))
+    
+    # Admin security commands
+    application.add_handler(CommandHandler("antiflood", toggle_antiflood, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("setflood", configure_antiflood, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("automod", toggle_automod, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("antilink", toggle_antilink, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("antiswear", toggle_antiswear, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("setbadwords", set_bad_words, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("captcha", toggle_captcha, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("setcaptcha", configure_captcha, filters=filters.ChatType.GROUPS))
+    
+    # Admin management commands
+    application.add_handler(CommandHandler("setrules", set_rules, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("setwelcome", set_welcome, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("welcome", toggle_welcome, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("welcomepreview", preview_welcome, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("setgoodbye", set_goodbye, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("goodbye", toggle_goodbye, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("note", save_note, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("get", get_note, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("delnote", del_note, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("filter", add_filter, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("stop", stop_filter, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("setmaxwarn", set_max_warnings, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("settings", settings_panel, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("info", group_info, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("export", export_stats, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("stats", group_stats, filters=filters.ChatType.GROUPS))
+    
+    # General commands
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("rules", show_rules, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("id", get_id))
+    application.add_handler(CommandHandler("leaderboard", leaderboard, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("poll", create_poll, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("quiz", create_quiz, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("roll", roll_dice, filters=filters.ChatType.GROUPS))
+    
+    # === MESSAGE HANDLERS (Groups 1-3) ===
+    
+    # New member CAPTCHA
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_member_captcha))
+    
+    # Goodbye messages
+    application.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, send_goodbye_message))
+    
+    # Notes/Filters (Group 1)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_notes_and_filters), group=1)
+    
+    # Anti-flood (Group 2)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, antiflood_check), group=2)
+    
+    # Auto-moderation (Group 3)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, scan_message), group=3)
+    
+    # === CALLBACK QUERY HANDLERS ===
+    
+    # CAPTCHA buttons
+    application.add_handler(CallbackQueryHandler(handle_captcha, pattern="^captcha_"))
+    
+    # Settings buttons
+    application.add_handler(CallbackQueryHandler(handle_callback_query))
+    
+    # === ERROR HANDLER ===
+    application.add_error_handler(error_handler)
+    
+    return application
+
 # === PRODUCTION CONFIGURATION ===
 class BotConfig:
     """Secure configuration from environment variables only.
