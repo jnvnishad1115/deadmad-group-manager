@@ -3222,9 +3222,9 @@ def setup_application() -> Application:
     ), group=4)
     
     # Callback handlers
-    application.add_handler(CallbackQueryHandler(captcha_callback, pattern="^captcha_"))
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
-    
+  application.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^captcha_"))
+
+application.add_handler(CallbackQueryHandler(handle_callback_query, pattern=r"^(?!captcha_)"))
     # Error handler
     application.add_error_handler(error_handler)
     
