@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # =============================================================================
-# PRODUCTION-READY TELEGRAM GROUP MANAGER BOT
-# MongoDB Version | Enhanced Security | Per-Group Warnings
-# 
-# SECURITY NOTICE:
-# - Never hardcode credentials
-# - Use environment variables for all sensitive data
-# - Run on a secure server (not Android due to MongoDB SRV DNS requirements)
-# - Keep dependencies updated
+# PRODUCTION-READY TELEGRAM GROUP MANAGER BOT v2.1
+# Features: CAPTCHA, Anti-Flood, Auto-Mod, Warnings, Leaderboard with Stats, @admin Tagging
 # =============================================================================
 
 import os
 import sys
 import re
 import csv
-import time
-import signal
-import logging
 import asyncio
+import logging
 import random
+import time
 from io import BytesIO
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,199 +23,85 @@ from contextlib import asynccontextmanager
 
 from telegram import (
     Update, User, Chat, Message, MessageEntity, InlineKeyboardButton, 
-    InlineKeyboardMarkup, ChatMember
+    InlineKeyboardMarkup, ChatMember, ChatPermissions
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    filters, ContextTypes, Application, JobQueue  # ✅ Added JobQueue
+    filters, ContextTypes, Application, JobQueue
 )
 from telegram.constants import ParseMode
 from telegram.error import TelegramError, Forbidden, BadRequest
-from pymongo import MongoClient, ASCENDING, DESCENDING
-from pymongo.collection import Collection
-from pymongo.errors import PyMongoError, ConnectionFailure
-from logging.handlers import RotatingFileHandler
-import pytz  # ✅ NEW: For timezone support
+from motor.motor_asyncio import AsyncIOMotorClient
+from motor.core import AgnosticCollection as Collection
+import pytz
+from pydantic import BaseSettings, Field, validator
 
-def setup_application() -> Application:
-    """Setup and configure the application"""
-    global application
-    
-    # ✅ FIXED: Initialize JobQueue
-    application = (
-        ApplicationBuilder()
-        .token(config.TOKEN)
-        .concurrent_updates(True)
-        .connection_pool_size(8)
-        .rate_limiter(None)
-        .job_queue(JobQueue())
-        .build()
-    )
-    
-    # ✅ FIXED: Start the scheduler
-    application.job_queue.scheduler.start()
-    logger.info("✅ JobQueue started successfully")
-    
-    # === MESSAGE LOGGING (Group -1) ===
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, 
-            message_logger
-        ), 
-        group=-1
-    )
-    
-    # === COMMAND HANDLERS (Group 0) ===
-    
-    # Owner-only commands
-    application.add_handler(CommandHandler("broadcast", broadcast_command, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("leave", leave_command))
-    application.add_handler(CommandHandler("logs", view_bot_logs, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("resetgroup", reset_group_command))
-    application.add_handler(CommandHandler("confirm", handle_reset_confirmation))
-    application.add_handler(CommandHandler("shutdown", shutdown_bot, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("ping", ping_bot))
-    
-    # Admin moderation commands
-    application.add_handler(CommandHandler("ban", ban_user, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("unban", unban_user, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("mute", mute_user, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("unmute", unmute_user, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("kick", kick_user, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("warn", warn_user, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("unwarn", unwarn_user, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("warnings", view_warnings, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("purge", purge_messages, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("promote", promote_user, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("demote", demote_user, filters=filters.ChatType.GROUPS))
-    
-    # Admin security commands
-    application.add_handler(CommandHandler("antiflood", toggle_antiflood, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("setflood", configure_antiflood, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("automod", toggle_automod, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("antilink", toggle_antilink, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("antiswear", toggle_antiswear, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("setbadwords", set_bad_words, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("captcha", toggle_captcha, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("setcaptcha", configure_captcha, filters=filters.ChatType.GROUPS))
-    
-    # Admin management commands
-    application.add_handler(CommandHandler("setrules", set_rules, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("setwelcome", set_welcome, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("welcome", toggle_welcome, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("welcomepreview", preview_welcome, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("setgoodbye", set_goodbye, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("goodbye", toggle_goodbye, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("note", save_note, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("get", get_note, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("delnote", del_note, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("filter", add_filter, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("stop", stop_filter, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("setmaxwarn", set_max_warnings, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("settings", settings_panel, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("info", group_info, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("export", export_stats, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("stats", group_stats, filters=filters.ChatType.GROUPS))
-    
-    # General commands
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("rules", show_rules, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("id", get_id))
-    application.add_handler(CommandHandler("leaderboard", leaderboard, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("poll", create_poll, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("quiz", create_quiz, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("roll", roll_dice, filters=filters.ChatType.GROUPS))
-    
-    # === MESSAGE HANDLERS (Groups 1-3) ===
-    
-    # New member CAPTCHA
-    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_member_captcha))
-    
-    # Goodbye messages
-    application.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, send_goodbye_message))
-    
-    # Notes/Filters (Group 1)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_notes_and_filters), group=1)
-    
-    # Anti-flood (Group 2)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, antiflood_check), group=2)
-    
-    # Auto-moderation (Group 3)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, scan_message), group=3)
-    
-    # === CALLBACK QUERY HANDLERS ===
-    
-    # CAPTCHA buttons
-    application.add_handler(CallbackQueryHandler(handle_captcha, pattern="^captcha_"))
-    
-    # Settings buttons
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
-    
-    # === ERROR HANDLER ===
-    application.add_error_handler(error_handler)
-    
-    return application
+# =============================================================================
+# CONFIGURATION - SECURE BY DESIGN
+# =============================================================================
 
-
-# === PRODUCTION CONFIGURATION ===
-class BotConfig:
-    """Secure configuration from environment variables only.
-    No hardcoded credentials allowed in production."""
+class BotConfig(BaseSettings):
+    """Secure configuration from environment variables"""
     
-    # Required configuration - will exit if not set
-    TOKEN: str = "8290310263:AAGnseEQA6qyXk8lqFbTf4vqNdKzJKZq0tg"
-    ADMIN_ID: int = 8149151609
-    MONGODB_URI: str = "mongodb+srv://mefirebase1115_db_user:f76qFi3OqJQsagU2@cluster0.wsppssu.mongodb.net/?appName=Cluster0"
+    # Required
+    bot_token: str = "8290310263:AAGnseEQA6qyXk8lqFbTf4vqNdKzJKZq0tg"
+    admin_id: int = 8149151609
+    mongodb_uri: str = "mongodb+srv://mefirebase1115_db_user:f76qFi3OqJQsagU2@cluster0.wsppssu.mongodb.net/?appName=Cluster0"
     
-    # Optional configuration with sensible defaults
-    DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
-    DATABASE_NAME: str = os.getenv("DATABASE_NAME", "telegram_bot")
-    MAX_WARNINGS: int = int(os.getenv("MAX_WARNINGS", "5"))
-    CAPTCHA_TIMEOUT: int = int(os.getenv("CAPTCHA_TIMEOUT", "120"))
-    FLOOD_LIMIT: int = int(os.getenv("FLOOD_LIMIT", "5"))
-    FLOOD_TIME: int = int(os.getenv("FLOOD_TIME", "10"))
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    RATE_LIMIT_CALLS: int = int(os.getenv("RATE_LIMIT_CALLS", "5"))
-    RATE_LIMIT_PERIOD: int = int(os.getenv("RATE_LIMIT_PERIOD", "60"))
-    LOG_FILE_MAX_BYTES: int = int(os.getenv("LOG_FILE_MAX_BYTES", "10485760"))  # 10MB
-    LOG_FILE_BACKUP_COUNT: int = int(os.getenv("LOG_FILE_BACKUP_COUNT", "5"))
+    # Optional with defaults
+    database_name: str = Field(default="telegram_bot", env="DATABASE_NAME")
+    debug: bool = Field(default=False, env="DEBUG")
+    max_warnings: int = Field(default=5, env="MAX_WARNINGS")
+    captcha_timeout: int = Field(default=120, env="CAPTCHA_TIMEOUT")
+    flood_limit: int = Field(default=5, env="FLOOD_LIMIT")
+    flood_time: int = Field(default=10, env="FLOOD_TIME")
+    rate_limit_calls: int = Field(default=5, env="RATE_LIMIT_CALLS")
+    rate_limit_period: int = Field(default=60, env="RATE_LIMIT_PERIOD")
+    log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    log_file_max_bytes: int = Field(default=10 * 1024 * 1024, env="LOG_FILE_MAX_BYTES")
+    log_file_backup_count: int = Field(default=5, env="LOG_FILE_BACKUP_COUNT")
+    cache_ttl_seconds: int = Field(default=300, env="CACHE_TTL_SECONDS")
+    max_cache_size: int = Field(default=1000, env="MAX_CACHE_SIZE")
     
-    def validate(self) -> Tuple[bool, List[str]]:
-        """Validate required configuration before startup"""
-        errors = []
-        if not self.TOKEN:
-            errors.append("❌ BOT_TOKEN environment variable is not set")
-        if not self.ADMIN_ID or self.ADMIN_ID == 0:
-            errors.append("❌ ADMIN_ID environment variable is not set")
-        if not self.MONGODB_URI:
-            errors.append("❌ MONGODB_URI environment variable is not set")
-        return len(errors) == 0, errors
+    @validator("max_warnings")
+    def validate_max_warnings(cls, v):
+        if not 2 <= v <= 10:
+            raise ValueError("max_warnings must be between 2-10")
+        return v
     
-    def log_config(self, logger: logging.Logger):
-        """Log configuration (hide sensitive data)"""
-        logger.info("=== Bot Configuration ===")
-        logger.info(f"Admin ID: {self.ADMIN_ID}")
-        logger.info(f"Database: {self.DATABASE_NAME}")
-        logger.info(f"Max Warnings: {self.MAX_WARNINGS}")
-        logger.info(f"Captcha Timeout: {self.CAPTCHA_TIMEOUT}s")
-        logger.info(f"Flood Limit: {self.FLOOD_LIMIT} msgs/{self.FLOOD_TIME}s")
-        logger.info(f"Rate Limit: {self.RATE_LIMIT_CALLS} calls/{self.RATE_LIMIT_PERIOD}s")
-        logger.info(f"Debug Mode: {self.DEBUG}")
-        logger.info("=========================")
+    @validator("captcha_timeout")
+    def validate_captcha_timeout(cls, v):
+        if not 30 <= v <= 600:
+            raise ValueError("captcha_timeout must be between 30-600 seconds")
+        return v
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
 
 config = BotConfig()
 
-# === GLOBALS ===
-START_TIME = time.time()
+# =============================================================================
+# CONSTANTS
+# =============================================================================
 
-# === ADVANCED LOGGING SETUP ===
+MUTE_DURATION_FLOOD = 300
+MUTE_DURATION_WARN_MAX = 86400
+MUTE_DURATION_WARN_NEAR_MAX = 3600
+BAD_WORDS_DEFAULT = ["fuck", "shit", "bitch", "asshole", "dick"]
+WARN_EXPIRY_DAYS = 90
+ADMIN_TAG_COOLDOWN = 300
+
+# =============================================================================
+# LOGGING SETUP
+# =============================================================================
+
 def setup_logger() -> logging.Logger:
     """Setup production-grade logging"""
     Path("logs").mkdir(exist_ok=True)
     logger = logging.getLogger("telegram_bot")
-    level = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
-    logger.setLevel(logging.DEBUG if config.DEBUG else level)
+    level = getattr(logging, config.log_level.upper(), logging.INFO)
+    logger.setLevel(logging.DEBUG if config.debug else level)
     logger.handlers.clear()
     
     formatter = logging.Formatter(
@@ -230,22 +109,20 @@ def setup_logger() -> logging.Logger:
         datefmt='%Y-%m-%d %H:%M:%S %Z'
     )
     
-    # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
-    console_handler.setLevel(logging.DEBUG if config.DEBUG else logging.INFO)
+    console_handler.setLevel(logging.DEBUG if config.debug else level)
     logger.addHandler(console_handler)
     
-    # File handler with rotation
     try:
-        file_handler = RotatingFileHandler(
+        file_handler = logging.handlers.RotatingFileHandler(
             "logs/bot.log", 
-            maxBytes=config.LOG_FILE_MAX_BYTES, 
-            backupCount=config.LOG_FILE_BACKUP_COUNT, 
+            maxBytes=config.log_file_max_bytes, 
+            backupCount=config.log_file_backup_count, 
             encoding='utf-8'
         )
         file_handler.setFormatter(formatter)
-        file_handler.setLevel(logging.DEBUG if config.DEBUG else logging.INFO)
+        file_handler.setLevel(logging.INFO)
         logger.addHandler(file_handler)
     except Exception as e:
         logger.error(f"Failed to setup file handler: {e}")
@@ -254,134 +131,66 @@ def setup_logger() -> logging.Logger:
 
 logger = setup_logger()
 
-# === PRODUCTION MONGODB SETUP ===
+# =============================================================================
+# MONGODB ASYNC SETUP
+# =============================================================================
+
 class MongoDB:
-    """MongoDB client with connection pooling and error handling"""
-    def __init__(self):
-        self.client = None
-        self.db = None
-        self._connect()
+    """Async MongoDB client with connection pooling"""
     
-    def _connect(self):
-        """Establish MongoDB connection with retry logic and DNS fallback"""
+    def __init__(self):
+        self.client: Optional[AsyncIOMotorClient] = None
+        self.db = None
+    
+    async def connect(self):
+        """Establish connection with retry logic"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Use direct connection if SRV fails (for environments without proper DNS)
-                if config.MONGODB_URI.startswith("mongodb+srv://"):
-                    logger.warning("Using MongoDB SRV connection. Ensure DNS is properly configured.")
-                
-                self.client = MongoClient(
-                    config.MONGODB_URI,
+                self.client = AsyncIOMotorClient(
+                    config.mongodb_uri,
                     serverSelectionTimeoutMS=5000,
                     connectTimeoutMS=5000,
                     socketTimeoutMS=5000,
                     retryWrites=True,
                     w='majority',
-                    maxPoolSize=10,  # Connection pooling
+                    maxPoolSize=10,
                     minPoolSize=3
                 )
-                # Test connection
-                self.client.admin.command('ping')
-                self.db = self.client[config.DATABASE_NAME]
-                self.setup_collections()
-                self.create_indexes()
+                await self.client.admin.command('ping')
+                self.db = self.client[config.database_name]
+                await self.create_indexes()
                 logger.info("✅ MongoDB connected successfully")
                 return
-                
-            except ConnectionFailure as e:
+            except Exception as e:
                 logger.error(f"MongoDB connection attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
                     raise
-                time.sleep(2 ** attempt)
-            
-            except Exception as e:
-                logger.critical(f"MongoDB connection error: {e}")
-                raise
+                await asyncio.sleep(2 ** attempt)
     
-    def setup_collections(self):
-        """Initialize collection references"""
-        self.users: Collection = self.db.users
-        self.groups: Collection = self.db.groups
-        self.warnings: Collection = self.db.warnings
-        self.logs: Collection = self.db.logs
-        self.captchas: Collection = self.db.captchas
-        self.polls: Collection = self.db.polls
-        self.bot_stats: Collection = self.db.bot_stats
-        self.admin_permissions: Collection = self.db.admin_permissions
-    
-    def create_indexes(self):
+    async def create_indexes(self):
         """Create performance indexes"""
         try:
-            # Users collection
-            self.users.create_index([("id", ASCENDING)], unique=True)
-            self.users.create_index([("username", ASCENDING)], sparse=True)
-            
-            # Groups collection
-            self.groups.create_index([("id", ASCENDING)], unique=True)
-            
-            # Warnings collection
-            self.warnings.create_index([
-                ("user_id", ASCENDING), 
-                ("group_id", ASCENDING), 
-                ("active", ASCENDING)
-            ])
-            self.warnings.create_index([
-                ("timestamp", DESCENDING)
-            ], expireAfterSeconds=7776000)  # Auto-expire after 90 days
-            
-            # Logs collection
-            self.logs.create_index([
-                ("group_id", ASCENDING), 
-                ("timestamp", DESCENDING)
-            ])
-            self.logs.create_index([
-                ("user_id", ASCENDING), 
-                ("timestamp", DESCENDING)
-            ])
-            
-            # Captchas collection
-            self.captchas.create_index([
-                ("expires_at", ASCENDING)
-            ], expireAfterSeconds=0)  # TTL index
-            self.captchas.create_index([
-                ("user_id", ASCENDING), 
-                ("group_id", ASCENDING)
-            ])
-            
-            # Bot stats collection
-            self.bot_stats.create_index([
-                ("date", DESCENDING)
-            ], unique=True)
-            
-            # Admin permissions collection
-            self.admin_permissions.create_index([
-                ("user_id", ASCENDING), 
-                ("group_id", ASCENDING)
-            ], unique=True)
-            
+            await self.db.users.create_index([("id", 1)], unique=True)
+            await self.db.users.create_index([("username", 1)], sparse=True)
+            await self.db.groups.create_index([("id", 1)], unique=True)
+            await self.db.warnings.create_index([("user_id", 1), ("group_id", 1), ("active", 1)])
+            await self.db.warnings.create_index([("timestamp", -1)], expireAfterSeconds=WARN_EXPIRY_DAYS * 86400)
+            await self.db.logs.create_index([("group_id", 1), ("timestamp", -1)])
+            await self.db.logs.create_index([("user_id", 1), ("timestamp", -1)])
+            await self.db.captchas.create_index([("expires_at", 1)], expireAfterSeconds=0)
+            await self.db.captchas.create_index([("user_id", 1), ("group_id", 1)])
+            await self.db.bot_stats.create_index([("date", -1)], unique=True)
+            await self.db.admin_permissions.create_index([("user_id", 1), ("group_id", 1)], unique=True)
             logger.info("✅ MongoDB indexes created")
-            
-        except PyMongoError as e:
+        except Exception as e:
             logger.error(f"Failed to create indexes: {e}")
             raise
     
-    def get_user_warnings(self, user_id: int, group_id: int) -> int:
-        """Get active warning count for a user in a group"""
+    async def add_warning(self, user_id: int, group_id: int, reason: str, warned_by: int) -> int:
+        """Add warning and return new count"""
         try:
-            return self.warnings.count_documents({
-                "user_id": user_id,
-                "group_id": group_id,
-                "active": True
-            })
-        except PyMongoError as e:
-            logger.error(f"DB error in get_user_warnings: {e}")
-            return 0
-    
-    def add_warning(self, user_id: int, group_id: int, reason: str, warned_by: int) -> int:
-        """Add a warning and return the new count"""
-        try:
-            self.warnings.insert_one({
+            await self.db.warnings.insert_one({
                 "user_id": user_id,
                 "group_id": group_id,
                 "reason": reason,
@@ -389,84 +198,117 @@ class MongoDB:
                 "timestamp": datetime.utcnow(),
                 "active": True
             })
-            return self.get_user_warnings(user_id, group_id)
-        except PyMongoError as e:
+            return await self.get_user_warnings(user_id, group_id)
+        except Exception as e:
             logger.error(f"DB error in add_warning: {e}")
             return 0
     
-    def clear_warnings(self, user_id: int, group_id: int) -> int:
-        """Clear all warnings for a user in a group"""
+    async def get_user_warnings(self, user_id: int, group_id: int) -> int:
+        """Get active warning count"""
         try:
-            result = self.warnings.update_many(
+            return await self.db.warnings.count_documents({
+                "user_id": user_id,
+                "group_id": group_id,
+                "active": True
+            })
+        except Exception as e:
+            logger.error(f"DB error in get_user_warnings: {e}")
+            return 0
+    
+    async def clear_warnings(self, user_id: int, group_id: int) -> int:
+        """Clear all warnings for user"""
+        try:
+            result = await self.db.warnings.update_many(
                 {"user_id": user_id, "group_id": group_id, "active": True},
                 {"$set": {"active": False}}
             )
             return result.modified_count
-        except PyMongoError as e:
+        except Exception as e:
             logger.error(f"DB error in clear_warnings: {e}")
             return 0
     
-    def remove_last_warning(self, user_id: int, group_id: int) -> bool:
-        """Remove the most recent warning"""
+    async def remove_last_warning(self, user_id: int, group_id: int) -> bool:
+        """Remove most recent warning"""
         try:
-            warning = self.warnings.find_one_and_update(
+            warning = await self.db.warnings.find_one_and_update(
                 {"user_id": user_id, "group_id": group_id, "active": True},
                 {"$set": {"active": False}},
-                sort=[("timestamp", DESCENDING)]
+                sort=[("timestamp", -1)]
             )
             return warning is not None
-        except PyMongoError as e:
+        except Exception as e:
             logger.error(f"DB error in remove_last_warning: {e}")
             return False
 
-# Initialize MongoDB - will exit on failure
-try:
-    mongo = MongoDB()
-except PyMongoError as e:
-    logger.critical(f"❌ Failed to initialize MongoDB: {e}")
-    logger.critical("Bot cannot start without database connection")
-    sys.exit(1)
+mongo = MongoDB()
 
-# === CACHING SYSTEM ===
-_group_cache: Dict[str, Any] = {}
-_cache_ttl: Dict[str, float] = {}
-_cache_lock = asyncio.Lock()
+# =============================================================================
+# TTL CACHE WITH SIZE LIMIT
+# =============================================================================
 
-async def get_cached_group(group_id: int) -> Dict[str, Any]:
-    """Async-aware group cache with TTL"""
-    cache_key = f"group_{group_id}"
-    now = time.time()
+class TTLCache:
+    """Thread-safe TTL cache with size limit"""
     
-    async with _cache_lock:
-        if cache_key in _group_cache and now - _cache_ttl.get(cache_key, 0) < 300:
-            return _group_cache[cache_key]
+    def __init__(self, maxsize: int, ttl: int):
+        self.maxsize = maxsize
+        self.ttl = ttl
+        self._cache: Dict[str, Any] = {}
+        self._timestamps: Dict[str, float] = {}
+        self._lock = asyncio.Lock()
     
-    try:
-        group = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: mongo.groups.find_one({"id": group_id}) or {}
-        )
-        async with _cache_lock:
-            _group_cache[cache_key] = group
-            _cache_ttl[cache_key] = now
-        return group
-    except PyMongoError as e:
-        logger.error(f"DB error in get_cached_group: {e}")
-        return {}
+    async def get(self, key: str) -> Optional[Any]:
+        async with self._lock:
+            now = time.time()
+            if key in self._cache and now - self._timestamps.get(key, 0) < self.ttl:
+                return self._cache[key]
+            self._cache.pop(key, None)
+            self._timestamps.pop(key, None)
+            return None
+    
+    async def set(self, key: str, value: Any):
+        async with self._lock:
+            if len(self._cache) >= self.maxsize:
+                oldest_key = min(self._timestamps, key=self._timestamps.get)
+                self._cache.pop(oldest_key, None)
+                self._timestamps.pop(oldest_key, None)
+            self._cache[key] = value
+            self._timestamps[key] = time.time()
+    
+    async def delete(self, key: str):
+        async with self._lock:
+            self._cache.pop(key, None)
+            self._timestamps.pop(key, None)
+    
+    async def clear(self):
+        async with self._lock:
+            self._cache.clear()
+            self._timestamps.clear()
 
-def invalidate_group_cache(group_id: int):
-    """Invalidate group cache"""
-    _group_cache.pop(f"group_{group_id}", None)
-    _cache_ttl.pop(f"group_{group_id}", None)
+group_cache = TTLCache(maxsize=config.max_cache_size, ttl=config.cache_ttl_seconds)
+admin_cache = TTLCache(maxsize=config.max_cache_size, ttl=config.cache_ttl_seconds)
 
-# === TELEGRAM UTILITY FUNCTIONS ===
+# =============================================================================
+# GLOBAL STATE WITH LOCKS
+# =============================================================================
+
+_user_command_tracker: Dict[int, List[float]] = defaultdict(list)
+_flood_tracker: Dict[str, List[float]] = defaultdict(list)
+_tracker_lock = asyncio.Lock()
+_flood_lock = asyncio.Lock()
+
+# Admin tagging state
+ADMIN_TAG_CACHE: Dict[int, float] = {}
+ADMIN_TAG_LOCK = asyncio.Lock()
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
 def get_user_mention(user: User) -> str:
-    """Get safe user mention string"""
-    try:
-        if user.username:
-            return f"@{user.username}"
-        return f'<a href="tg://user?id={user.id}">{escape_html(user.first_name)}</a>'
-    except Exception:
-        return f"User({user.id})"
+    """Safe user mention"""
+    if user.username:
+        return f"@{user.username}"
+    return f'<a href="tg://user?id={user.id}">{escape_html(user.first_name)}</a>'
 
 def escape_html(text: str) -> str:
     """Escape HTML special characters"""
@@ -483,11 +325,11 @@ def parse_time_string(time_str: Optional[str]) -> Optional[int]:
         value, unit = int(match.group(1)), match.group(2) or 's'
         multipliers = {'d': 86400, 'h': 3600, 'm': 60, 's': 1}
         return value * multipliers.get(unit, 1)
-    except (ValueError, AttributeError):
+    except:
         return None
 
 def format_duration(seconds: int) -> str:
-    """Format seconds to human-readable duration"""
+    """Format seconds to human-readable"""
     if seconds < 60:
         return f"{seconds}s"
     elif seconds < 3600:
@@ -497,110 +339,80 @@ def format_duration(seconds: int) -> str:
     else:
         return f"{seconds // 86400}d"
 
-def format_time_ago(seconds: int) -> str:
-    """Format seconds to 'X ago' string"""
-    if seconds < 60:
-        return f"{seconds}s ago"
-    elif seconds < 3600:
-        return f"{seconds // 60}m ago"
-    elif seconds < 86400:
-        return f"{seconds // 3600}h ago"
-    else:
-        return f"{seconds // 86400}d ago"
-
 async def delete_after_delay(message: Message, delay: int):
-    """Delete a message after a delay"""
+    """Delete message after delay"""
     await asyncio.sleep(delay)
     try:
         await message.delete()
     except:
         pass
 
-# === PERMISSION CHECKING ===
-async def is_admin(chat: Chat, user_id: int, cache: bool = True) -> bool:
-    """Check if user is admin with optional caching"""
-    if not cache:
-        try:
-            member = await chat.get_member(user_id)
-            return member.status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]
-        except Exception as e:
-            logger.error(f"Admin check failed: {e}")
-            return False
-    
-    cache_key = f"admin_{chat.id}_{user_id}"
-    now = time.time()
-    
-    if cache_key in _cache_ttl and now - _cache_ttl.get(cache_key, 0) < 300:
-        return _group_cache.get(cache_key, False)
+# =============================================================================
+# SECURITY & PERMISSIONS
+# =============================================================================
+
+async def is_admin(chat: Chat, user_id: int, use_cache: bool = True) -> bool:
+    """Check if user is admin with caching"""
+    if use_cache:
+        cache_key = f"admin_{chat.id}_{user_id}"
+        cached = await admin_cache.get(cache_key)
+        if cached is not None:
+            return cached
     
     try:
         member = await chat.get_member(user_id)
         is_admin_status = member.status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]
-        
-        # Cache the result
-        async with _cache_lock:
-            _group_cache[cache_key] = is_admin_status
-            _cache_ttl[cache_key] = now
-        
+        if use_cache:
+            await admin_cache.set(cache_key, is_admin_status)
         return is_admin_status
-    except Exception as e:
-        logger.error(f"Admin check failed: {e}")
+    except:
         return False
 
 async def bot_can_restrict_members(chat: Chat, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if bot has restrict members permission"""
+    """Check bot permissions"""
     try:
         bot_member = await chat.get_member(context.bot.id)
         return (bot_member.status == ChatMember.ADMINISTRATOR and 
                 bot_member.can_restrict_members)
-    except Exception as e:
-        logger.error(f"Bot permission check failed: {e}")
+    except:
         return False
 
 async def bot_can_promote_members(chat: Chat, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if bot can promote members"""
+    """Check bot promotion permissions"""
     try:
         bot_member = await chat.get_member(context.bot.id)
         return (bot_member.status == ChatMember.ADMINISTRATOR and 
                 bot_member.can_promote_members)
-    except Exception as e:
-        logger.error(f"Bot permission check failed: {e}")
+    except:
         return False
 
-def has_permission(user_id: int, permission: str, group_id: int) -> bool:
-    """Check if admin has specific permission (for granular permissions)"""
+async def get_group_admins(chat: Chat, context: ContextTypes.DEFAULT_TYPE) -> List[ChatMember]:
+    """Get all administrators in a group"""
     try:
-        perm_doc = mongo.admin_permissions.find_one({
-            "user_id": user_id,
-            "group_id": group_id
-        })
-        
-        if not perm_doc:
-            return True  # Default allow if no permissions set
-        
-        perms = perm_doc.get("permissions", [])
-        return "all" in perms or permission in perms
-        
-    except PyMongoError as e:
-        logger.error(f"Permission check failed: {e}")
-        return True  # Fail open for safety
+        admins = []
+        async for member in context.bot.get_chat_administrators(chat.id):
+            if not member.user.is_bot:
+                admins.append(member)
+        return admins
+    except Exception as e:
+        logger.error(f"Failed to get admins for {chat.id}: {e}")
+        return []
 
-# === RATE LIMITING ===
-_user_command_tracker: Dict[int, List[float]] = defaultdict(list)
-_callback_tracker: Dict[int, List[float]] = defaultdict(list)
-
-def check_rate_limit(user_id: int, tracker: Dict = _user_command_tracker) -> bool:
-    """Check if user is within rate limits"""
+def check_rate_limit(user_id: int, tracker: Dict) -> bool:
+    """Rate limit check"""
     now = time.time()
     calls = tracker[user_id]
-    calls = [t for t in calls if now - t < config.RATE_LIMIT_PERIOD]
+    calls = [t for t in calls if now - t < config.rate_limit_period]
     calls.append(now)
     tracker[user_id] = calls
-    return len(calls) <= config.RATE_LIMIT_CALLS
+    return len(calls) <= config.rate_limit_calls
 
-# === DECORATORS ===
+# =============================================================================
+# DECORATORS
+# =============================================================================
+
 def admin_only(permission: Optional[str] = None):
-    """Decorator for admin-only commands with optional permission check"""
+    """Decorator for admin-only commands"""
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -612,18 +424,13 @@ def admin_only(permission: Optional[str] = None):
                 await message.reply_text("❌ This command only works in groups.")
                 return
             
-            # Owner bypass
-            if user.id == config.ADMIN_ID:
+            if user.id == config.admin_id:
                 return await func(update, context, *args, **kwargs)
             
             try:
                 member = await chat.get_member(user.id)
                 if member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
                     await message.reply_text("❌ <b>Admin only.</b>", parse_mode=ParseMode.HTML)
-                    return
-                
-                if permission and not has_permission(user.id, permission, chat.id):
-                    await message.reply_text("❌ <b>No permission.</b>", parse_mode=ParseMode.HTML)
                     return
                 
                 return await func(update, context, *args, **kwargs)
@@ -636,7 +443,7 @@ def admin_only(permission: Optional[str] = None):
     return decorator
 
 def log_command(action: str):
-    """Decorator to log commands to database"""
+    """Log commands to database"""
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -654,10 +461,11 @@ def log_command(action: str):
                 return result
             except Exception as e:
                 error_msg = str(e)
+                logger.error(f"Error in {func.__name__}: {e}", exc_info=True)
                 raise
             finally:
                 try:
-                    mongo.logs.insert_one({
+                    await mongo.db.logs.insert_one({
                         "group_id": chat.id if chat else None,
                         "user_id": user.id if user else None,
                         "action": action,
@@ -667,88 +475,84 @@ def log_command(action: str):
                         "error": error_msg,
                         "execution_time_ms": int((time.time() - start_time) * 1000)
                     })
-                except PyMongoError as e:
+                except Exception as e:
                     logger.error(f"Failed to log command: {e}")
         
         return wrapper
     return decorator
 
 def rate_limit_decorator():
-    """Decorator for rate limiting commands"""
+    """Rate limit commands"""
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
             user_id = update.effective_user.id
-            if not check_rate_limit(user_id):
-                remaining = config.RATE_LIMIT_PERIOD - int(time.time() - _user_command_tracker[user_id][0])
-                await update.message.reply_text(
-                    f"⚠️ Too many commands. Please wait {remaining} seconds."
-                )
-                return
+            async with _tracker_lock:
+                if not check_rate_limit(user_id, _user_command_tracker):
+                    remaining = config.rate_limit_period - int(time.time() - _user_command_tracker[user_id][0])
+                    await update.message.reply_text(
+                        f"⚠️ Too many commands. Please wait {remaining} seconds."
+                    )
+                    return
             return await func(update, context, *args, **kwargs)
         return wrapper
     return decorator
 
 def owner_only():
-    """Decorator for owner-only commands"""
+    """Owner-only decorator"""
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-            if update.effective_user.id != config.ADMIN_ID:
+            if update.effective_user.id != config.admin_id:
                 await update.message.reply_text("❌ <b>Owner only.</b>", parse_mode=ParseMode.HTML)
                 return
             return await func(update, context, *args, **kwargs)
         return wrapper
     return decorator
 
-# === USER RESOLUTION ===
+# =============================================================================
+# USER RESOLUTION
+# =============================================================================
+
 async def resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Tuple[Optional[User], Optional[str]]:
     """Resolve target user from reply, mention, or ID"""
     message = update.effective_message
     
-    # Priority: reply to message
     if message.reply_to_message:
         return message.reply_to_message.from_user, None
     
-    # Check for arguments
     if not context.args:
         return None, "❌ Specify user by reply, @username, or numeric ID."
     
-    # Check for text entities (mentions)
+    identifier = context.args[0].strip()
+    
     if message.entities:
         for entity in message.entities:
             if entity.type == MessageEntity.MENTION:
-                # Username mention like @username
                 username = message.text[entity.offset + 1:entity.offset + entity.length].lower()
-                user_data = mongo.users.find_one({"username": username})
+                user_data = await mongo.db.users.find_one({"username": username})
                 if user_data:
                     try:
                         member = await update.effective_chat.get_member(user_data["id"])
                         return member.user, None
                     except:
                         return User(id=user_data["id"], first_name=username, is_bot=False), None
-                return None, f"❌ User @{username} not found in database. They must have messaged the bot at least once."
+                return None, f"❌ User @{username} not found in database."
             
             if entity.type == MessageEntity.TEXT_MENTION:
-                # Mention of user without username
                 return entity.user, None
-
-    identifier = context.args[0].strip()
     
-    # Numeric ID
     if identifier.isdigit():
         try:
             user_id = int(identifier)
             member = await update.effective_chat.get_member(user_id)
             return member.user, None
-        except Exception:
-            # Try to return a mock user if we can't find them in chat
+        except:
             return User(id=user_id, first_name=f"User {user_id}", is_bot=False), None
     
-    # Username mention fallback (if not caught by entities)
     if identifier.startswith('@'):
         username = identifier[1:].lower()
-        user_data = mongo.users.find_one({"username": username})
+        user_data = await mongo.db.users.find_one({"username": username})
         if user_data:
             try:
                 member = await update.effective_chat.get_member(user_data["id"])
@@ -759,50 +563,185 @@ async def resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     return None, f"❌ Invalid identifier '{identifier}'. Use @username or numeric ID."
 
-# === CORE COMMAND HANDLERS ===
+# =============================================================================
+# ADMIN TAGGING SYSTEM
+# =============================================================================
+
+async def handle_admin_tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle @admin tagging by users"""
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    # Check if feature is enabled
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    if not group_data.get("admin_tag_enabled", True):
+        return
+    
+    # Rate limit check
+    async with ADMIN_TAG_LOCK:
+        now = time.time()
+        last_tag = ADMIN_TAG_CACHE.get(user.id, 0)
+        if now - last_tag < ADMIN_TAG_COOLDOWN:
+            remaining = ADMIN_TAG_COOLDOWN - int(now - last_tag)
+            await message.reply_text(
+                f"⚠️ Please wait {remaining} seconds before tagging admins again.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        ADMIN_TAG_CACHE[user.id] = now
+    
+    # Get admins
+    admins = await get_group_admins(chat, context)
+    if not admins:
+        await message.reply_text("❌ Could not retrieve administrators.")
+        return
+    
+    # Build report message for admins
+    mention_text = f"{get_user_mention(user)} tagged @admin"
+    if message.reply_to_message:
+        mention_text += " in reply to a message"
+    
+    report_text = (
+        f"🚨 <b>Admin Alert</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>User:</b> {get_user_mention(user)} (ID: <code>{user.id}</code>)\n"
+        f"🏢 <b>Group:</b> {escape_html(chat.title)} (ID: <code>{chat.id}</code>)\n"
+        f"🕒 <b>Time:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+    )
+    
+    if message.reply_to_message:
+        if message.reply_to_message.from_user:
+            replied_user = message.reply_to_message.from_user
+            report_text += (
+                f"\n💬 <b>Reply to:</b> {get_user_mention(replied_user)} "
+                f"(ID: <code>{replied_user.id}</code>)\n"
+            )
+        
+        if message.reply_to_message.text:
+            report_text += (
+                f"📝 <b>Message:</b>\n"
+                f"<code>{escape_html(message.reply_to_message.text[:200])}</code>\n"
+            )
+    else:
+        if message.text:
+            clean_text = re.sub(r'@admin\b', '', message.text, flags=re.IGNORECASE).strip()
+            if clean_text:
+                report_text += f"\n📝 <b>Message:</b>\n<code>{escape_html(clean_text[:200])}</code>\n"
+    
+    report_text += (
+        f"\n━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 <a href=\"{message.link}\">Jump to Message</a>"
+    )
+    
+    # Notify each admin
+    notified_count = 0
+    failed_count = 0
+    
+    for admin in admins:
+        try:
+            await context.bot.send_message(
+                chat_id=admin.user.id,
+                text=report_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+            notified_count += 1
+        except Forbidden:
+            failed_count += 1
+            logger.warning(f"Cannot DM admin {admin.user.id} in group {chat.id}")
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Failed to notify admin {admin.user.id}: {e}")
+    
+    if notified_count > 0:
+        await message.reply_text(
+            f"✅ <b>Admins Notified!</b>\n"
+            f"{notified_count} administrator(s) will review your request.",
+            parse_mode=ParseMode.HTML,
+            reply_to_message_id=message.message_id
+        )
+    else:
+        await message.reply_text(
+            "❌ Could not notify administrators. They may have disabled DMs.",
+            parse_mode=ParseMode.HTML
+        )
+
+@admin_only()
+async def toggle_admin_tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle @admin tagging feature"""
+    chat = update.effective_chat
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    
+    new_status = not group_data.get("admin_tag_enabled", True)
+    
+    try:
+        await mongo.db.groups.update_one(
+            {"id": chat.id},
+            {"$set": {"admin_tag_enabled": new_status}},
+            upsert=True
+        )
+        await group_cache.delete(f"group_{chat.id}")
+        
+        status_text = "✅ Enabled" if new_status else "❌ Disabled"
+        await update.message.reply_text(f"🚨 Admin Tagging: {status_text}")
+    except Exception as e:
+        logger.error(f"Toggle admin tag failed: {e}", exc_info=True)
+        await update.message.reply_text("❌ Database error.")
+
+# =============================================================================
+# COMMAND HANDLERS - OWNER ONLY
+# =============================================================================
+
 @owner_only()
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Broadcast message to all groups (owner only)"""
+    """Broadcast message to all groups with pagination"""
     if not context.args:
         await update.message.reply_text("❌ Provide a message to broadcast.")
         return
     
     message = " ".join(context.args)
-    groups = mongo.groups.find({})
+    status_message = await update.message.reply_text("📢 Broadcasting to groups... 0 sent.")
+    
     success_count = 0
     fail_count = 0
+    batch_size = 50
+    skip = 0
     
-    status_message = await update.message.reply_text(f"📢 Broadcasting to groups... 0 sent.")
-    
-    for i, group in enumerate(groups):
-        if i > 0:
-            await asyncio.sleep(0.1)  # Rate limit broadcasts
+    while True:
+        groups = await mongo.db.groups.find({}).skip(skip).limit(batch_size).to_list(None)
+        if not groups:
+            break
         
-        try:
-            # Check if group['id'] is valid before sending
-            target_chat_id = group.get("id")
-            if not target_chat_id:
-                continue
-                
-            await context.bot.send_message(
-                chat_id=target_chat_id,
-                text=f"{escape_html(message)}",
-                parse_mode=ParseMode.HTML
-            )
-            success_count += 1
+        for group in groups:
+            await asyncio.sleep(0.1)
             
-            if i % 5 == 0:
-                await status_message.edit_text(
-                    f"📢 Broadcasting... {success_count} sent, {fail_count} failed."
-                )
+            try:
+                target_chat_id = group.get("id")
+                if not target_chat_id:
+                    continue
                 
-        except Forbidden:
-            logger.warning(f"Bot was removed from group {group.get('id')}")
-            mongo.groups.delete_one({"id": group.get("id")})
-            fail_count += 1
-        except Exception as e:
-            logger.error(f"Broadcast failed to {group.get('id')}: {e}")
-            fail_count += 1
+                await context.bot.send_message(
+                    chat_id=target_chat_id,
+                    text=escape_html(message),
+                    parse_mode=ParseMode.HTML
+                )
+                success_count += 1
+                
+                if (success_count + fail_count) % 5 == 0:
+                    await status_message.edit_text(
+                        f"📢 Broadcasting... {success_count} sent, {fail_count} failed."
+                    )
+                    
+            except Forbidden:
+                logger.warning(f"Bot removed from group {group.get('id')}")
+                await mongo.db.groups.delete_one({"id": group.get("id")})
+                fail_count += 1
+            except Exception as e:
+                logger.error(f"Broadcast failed to {group.get('id')}: {e}")
+                fail_count += 1
+        
+        skip += batch_size
     
     await status_message.edit_text(
         f"✅ Broadcast complete!\nSent: {success_count}\nFailed: {fail_count}"
@@ -810,10 +749,9 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @owner_only()
 async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Leave a group (owner only)"""
+    """Leave a group"""
     chat_id = update.effective_chat.id
     
-    # Allow specifying group ID
     if context.args and context.args[0].isdigit():
         chat_id = int(context.args[0])
     
@@ -826,13 +764,13 @@ async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await context.bot.leave_chat(chat_id)
         
-        # Cleanup group data
-        mongo.groups.delete_one({"id": chat_id})
-        mongo.warnings.delete_many({"group_id": chat_id})
-        mongo.logs.delete_many({"group_id": chat_id})
-        mongo.captchas.delete_many({"group_id": chat_id})
-        mongo.admin_permissions.delete_many({"group_id": chat_id})
-        invalidate_group_cache(chat_id)
+        await mongo.db.groups.delete_one({"id": chat_id})
+        await mongo.db.warnings.delete_many({"group_id": chat_id})
+        await mongo.db.logs.delete_many({"group_id": chat_id})
+        await mongo.db.captchas.delete_many({"group_id": chat_id})
+        await mongo.db.admin_permissions.delete_many({"group_id": chat_id})
+        await group_cache.delete(f"group_{chat_id}")
+        await admin_cache.clear()
         
         if chat_id != update.effective_chat.id:
             await update.message.reply_text(f"✅ Left group {chat_id} and cleaned up data.")
@@ -842,24 +780,16 @@ async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @owner_only()
 async def view_bot_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View bot logs (owner only) with file download and animation"""
+    """View bot logs with file download"""
     try:
-        # Initial message with animation
-        status_msg = await update.message.reply_text("🔍 <b>Searching for logs...</b>", parse_mode=ParseMode.HTML)
-        await asyncio.sleep(0.5)
-        await status_msg.edit_text("📂 <b>Formatting log entries...</b>", parse_mode=ParseMode.HTML)
-        await asyncio.sleep(0.5)
-        await status_msg.edit_text("⚙️ <b>Generating text file...</b>", parse_mode=ParseMode.HTML)
+        status_msg = await update.message.reply_text("🔍 Searching for logs...")
         
-        # Fetch last 10 logs
-        logs = list(mongo.logs.find({}).sort("timestamp", DESCENDING).limit(10))
+        logs = await mongo.db.logs.find({}).sort("timestamp", -1).limit(50).to_list(None)
         if not logs:
             await status_msg.edit_text("📋 No logs found.")
             return
         
-        # Create log content
-        log_content = "📜 BOT ACTIVITY LOGS (LAST 10)\n"
-        log_content += "="*50 + "\n\n"
+        log_content = "📜 BOT ACTIVITY LOGS (LAST 50)\n" + "="*50 + "\n\n"
         
         for log in logs:
             time_str = log['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
@@ -869,53 +799,44 @@ async def view_bot_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             error = log.get('error', 'None')
             details = log.get('details', log.get('command', 'N/A'))
             
-            log_content += f"TIME: {time_str}\n"
-            log_content += f"ACTION: {action}\n"
-            log_content += f"USER ID: {user_id}\n"
-            log_content += f"STATUS: {status}\n"
-            if error != 'None':
-                log_content += f"ERROR: {error}\n"
-            log_content += f"DETAILS: {details}\n"
-            log_content += "-"*30 + "\n\n"
-
-        # Convert to bytes for Telegram
+            log_content += (
+                f"TIME: {time_str}\nACTION: {action}\nUSER ID: {user_id}\nSTATUS: {status}\n"
+                f"{(f'ERROR: {error}\n') if error != 'None' else ''}DETAILS: {details}\n{'-'*30}\n\n"
+            )
+        
         log_bytes = BytesIO(log_content.encode('utf-8'))
         log_bytes.name = f"bot_logs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.txt"
         
-        await status_msg.edit_text("📤 <b>Sending file...</b>", parse_mode=ParseMode.HTML)
+        await status_msg.edit_text("📤 Sending file...")
         
-        # Send as document
         await context.bot.send_document(
             chat_id=update.effective_chat.id,
             document=log_bytes,
             filename=log_bytes.name,
-            caption="📜 <b>Bot Activity Logs (Last 10)</b>",
+            caption="📜 <b>Bot Activity Logs (Last 50)</b>",
             parse_mode=ParseMode.HTML
         )
         
-        # Remove the status message
         await status_msg.delete()
         
     except Exception as e:
-        logger.error(f"Error in view_bot_logs: {e}")
+        logger.error(f"Error in view_bot_logs: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Failed to generate logs: {e}")
 
 @owner_only()
 async def reset_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reset all group data (owner only)"""
+    """Reset group data with confirmation"""
     chat_id = update.effective_chat.id
     
     confirm_msg = await update.message.reply_text(
         "⚠️ <b>WARNING</b>\n\n"
-        "This will delete ALL warnings, logs, settings, and permissions for this group.\n"
-        "This action is <b>irreversible</b>.\n\n"
+        "This will delete ALL data for this group.\n"
         "Type <code>confirm</code> within 30 seconds to proceed.",
         parse_mode=ParseMode.HTML
     )
     
     context.user_data['pending_reset'] = chat_id
     
-    # Auto-clear confirmation after timeout
     await asyncio.sleep(30)
     if context.user_data.get('pending_reset') == chat_id:
         await confirm_msg.edit_text("❌ Reset cancelled (timeout).")
@@ -923,29 +844,26 @@ async def reset_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @owner_only()
 async def handle_reset_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle reset confirmation"""
+    """Process reset confirmation"""
     if context.user_data.get('pending_reset') == update.effective_chat.id:
-        confirmation_text = update.message.text.strip().lower()
-        
-        if confirmation_text == 'confirm':
+        if update.message.text.strip().lower() == 'confirm':
             chat_id = update.effective_chat.id
             try:
-                # Delete all group-related data
-                mongo.groups.delete_one({"id": chat_id})
-                mongo.warnings.delete_many({"group_id": chat_id})
-                mongo.logs.delete_many({"group_id": chat_id})
-                mongo.captchas.delete_many({"group_id": chat_id})
-                mongo.admin_permissions.delete_many({"group_id": chat_id})
-                invalidate_group_cache(chat_id)
+                await mongo.db.groups.delete_one({"id": chat.id})
+                await mongo.db.warnings.delete_many({"group_id": chat.id})
+                await mongo.db.logs.delete_many({"group_id": chat.id})
+                await mongo.db.captchas.delete_many({"group_id": chat.id})
+                await mongo.db.admin_permissions.delete_many({"group_id": chat.id})
+                await group_cache.delete(f"group_{chat.id}")
+                await admin_cache.clear()
                 
                 await update.message.reply_text(
-                    "✅ <b>Group Reset Complete</b>\n\n"
-                    "All data for this group has been deleted.",
+                    "✅ <b>Group Reset Complete</b>\n\nAll data deleted.",
                     parse_mode=ParseMode.HTML
                 )
-                logger.warning(f"Group {chat_id} was reset by owner")
-            except PyMongoError as e:
-                logger.error(f"Reset failed: {e}")
+                logger.warning(f"Group {chat_id} reset by owner")
+            except Exception as e:
+                logger.error(f"Reset failed: {e}", exc_info=True)
                 await update.message.reply_text("❌ Database error during reset.")
         else:
             await update.message.reply_text("❌ Reset cancelled.")
@@ -954,80 +872,78 @@ async def handle_reset_confirmation(update: Update, context: ContextTypes.DEFAUL
 
 @owner_only()
 async def shutdown_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Graceful shutdown (owner only)"""
+    """Graceful shutdown"""
     await update.message.reply_text("💤 Shutting down gracefully...")
     
     try:
-        mongo.bot_stats.update_one(
+        await mongo.db.bot_stats.update_one(
             {"date": datetime.utcnow().date().isoformat()},
             {"$inc": {"shutdowns": 1}},
             upsert=True
         )
         logger.info("Bot shutdown initiated by owner")
-    except PyMongoError as e:
+    except Exception as e:
         logger.error(f"Failed to save shutdown stats: {e}")
     
-    # Schedule shutdown
     asyncio.create_task(_perform_shutdown(context.application))
 
 async def _perform_shutdown(app: Application):
-    """Perform actual shutdown"""
-    await asyncio.sleep(1)  # Allow message to send
+    """Actual shutdown"""
+    await asyncio.sleep(1)
     await app.stop()
     await app.shutdown()
     sys.exit(0)
 
 @owner_only()
 async def ping_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Health check command"""
+    """Health check"""
     start = time.time()
-    msg = await update.message.reply_text(
-        f"🏓 <b>PINGING...</b>",
-        parse_mode=ParseMode.HTML
-    )
+    msg = await update.message.reply_text("🏓 <b>PINGING...</b>", parse_mode=ParseMode.HTML)
     
-    # Check MongoDB health
     db_status = "❌"
     db_latency = 0
     try:
         db_start = time.time()
-        mongo.client.admin.command('ping')
+        await mongo.client.admin.command('ping')
         db_status = "✅"
         db_latency = int((time.time() - db_start) * 1000)
     except:
         pass
     
-    # Get bot stats
     try:
-        stats = mongo.bot_stats.find_one(
+        stats = await mongo.db.bot_stats.find_one(
             {"date": datetime.utcnow().date().isoformat()}
         ) or {}
     except:
         stats = {}
     
     latency = int((time.time() - start) * 1000)
+    uptime = int(time.time() - START_TIME)
     
     ping_text = (
         f"<b>PONG</b> 🏓\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📡 <b>Latency:</b> {latency}ms\n"
         f"🗄️ <b>Database:</b> {db_latency}ms ({db_status})\n"
-        f"⌛ <b>Uptime:</b> {format_duration(int(time.time() - START_TIME))}\n"
+        f"⌛ <b>Uptime:</b> {format_duration(uptime)}\n"
         f"━━━━━━━━━━━━━━━━━━"
     )
     await msg.edit_text(ping_text, parse_mode=ParseMode.HTML)
 
-# === MODERATION COMMANDS ===
+# =============================================================================
+# MODERATION COMMANDS
+# =============================================================================
+
 @admin_only()
 @log_command("ban")
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ban a user from the group"""
+    """Ban a user"""
     target_user, error = await resolve_target_user(update, context)
     if error:
         await update.message.reply_text(error)
         return
     
-    if target_user.id == config.ADMIN_ID:
+    if target_user.id == config.admin_id:
         await update.message.reply_text("❌ Cannot ban bot owner.")
         return
     
@@ -1036,23 +952,19 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not await bot_can_restrict_members(update.effective_chat, context):
-        await update.message.reply_text("❌ I need 'Restrict Members' permission to ban users.")
+        await update.message.reply_text("❌ I need 'Restrict Members' permission.")
         return
     
     try:
         chat = update.effective_chat
         
-        # Get reason
+        reason = " ".join(context.args[1:]) if context.args else "No reason provided"
         if update.message.reply_to_message:
             reason = " ".join(context.args) if context.args else "No reason provided"
-        else:
-            reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason provided"
         
-        # Ban user
         await chat.ban_member(user_id=target_user.id)
         
-        # Update user record
-        mongo.users.update_one(
+        await mongo.db.users.update_one(
             {"id": target_user.id},
             {"$set": {
                 "id": target_user.id,
@@ -1073,49 +985,42 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
     except Forbidden:
-        await update.message.reply_text("❌ I don't have permission to ban users.")
-    except BadRequest as e:
-        logger.error(f"Ban failed: {e}")
-        await update.message.reply_text(f"❌ Failed to ban: {e.message}")
+        await update.message.reply_text("❌ No permission to ban users.")
     except Exception as e:
-        logger.error(f"Unexpected error in ban: {e}")
-        await update.message.reply_text("❌ An error occurred.")
+        logger.error(f"Ban failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to ban: {str(e)}")
 
 @admin_only()
 @log_command("unban")
 async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Unban a user"""
     chat = update.effective_chat
-    target_user, error = await resolve_target_user(update, context)
     
-    if error:
-        # Fallback for manual ID if resolve fails
-        if context.args and context.args[0].isdigit():
-            user_id = int(context.args[0])
-            user_name = f"User {user_id}"
-        else:
+    if context.args and context.args[0].isdigit():
+        user_id = int(context.args[0])
+    else:
+        target_user, error = await resolve_target_user(update, context)
+        if error:
             await update.message.reply_text(error)
             return
-    else:
         user_id = target_user.id
-        user_name = get_user_mention(target_user)
-
+    
     try:
         await chat.unban_member(user_id=user_id)
-        mongo.users.update_one(
+        await mongo.db.users.update_one(
             {"id": user_id},
             {"$unset": {f"banned_in.{chat.id}": ""}}
         )
         await update.message.reply_text(
             f"✅ <b>UNBANNED</b> ✅\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>User:</b> {user_name}\n"
+            f"👤 <b>User ID:</b> {user_id}\n"
             f"🔓 <i>Access restored!</i>",
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        logger.error(f"Unban failed: {e}")
-        await update.message.reply_text(f"❌ Failed to unban: {e}")
+        logger.error(f"Unban failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to unban: {str(e)}")
 
 @admin_only()
 @log_command("mute")
@@ -1126,7 +1031,7 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(error)
         return
     
-    if target_user.id == config.ADMIN_ID:
+    if target_user.id == config.admin_id:
         await update.message.reply_text("❌ Cannot mute bot owner.")
         return
     
@@ -1135,40 +1040,23 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not await bot_can_restrict_members(update.effective_chat, context):
-        await update.message.reply_text("❌ I need 'Restrict Members' permission to mute users.")
+        await update.message.reply_text("❌ I need 'Restrict Members' permission.")
         return
     
     try:
         chat = update.effective_chat
         
-        # Parse duration
-        time_arg = None
-        if update.message.reply_to_message and context.args:
-            time_arg = context.args[0]
-        elif not update.message.reply_to_message and len(context.args) > 1:
-            time_arg = context.args[1]
-        
+        time_arg = context.args[1] if len(context.args) > 1 else None
         duration_seconds = parse_time_string(time_arg)
         until_date = datetime.utcnow() + timedelta(seconds=duration_seconds) if duration_seconds else None
         
-        # Mute user
         await chat.restrict_member(
             user_id=target_user.id,
-            permissions={
-                "can_send_messages": False,
-                "can_send_media_messages": False,
-                "can_send_polls": False,
-                "can_send_other_messages": False,
-                "can_add_web_page_previews": False,
-                "can_change_info": False,
-                "can_invite_users": False,
-                "can_pin_messages": False
-            },
+            permissions=ChatPermissions(can_send_messages=False),
             until_date=until_date
         )
         
-        # Update user record
-        mongo.users.update_one(
+        await mongo.db.users.update_one(
             {"id": target_user.id},
             {"$set": {
                 f"muted_in.{chat.id}": {
@@ -1188,11 +1076,9 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🤫 <i>Silence is golden.</i>",
             parse_mode=ParseMode.HTML
         )
-    except Forbidden:
-        await update.message.reply_text("❌ I don't have permission to restrict users.")
     except Exception as e:
-        logger.error(f"Mute failed: {e}")
-        await update.message.reply_text(f"❌ Failed to mute: {e}")
+        logger.error(f"Mute failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to mute: {str(e)}")
 
 @admin_only()
 @log_command("unmute")
@@ -1202,73 +1088,49 @@ async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if context.args and context.args[0].isdigit():
         user_id = int(context.args[0])
-        try:
-            await chat.restrict_member(
-                user_id=user_id,
-                permissions={
-                    "can_send_messages": True,
-                    "can_send_media_messages": True,
-                    "can_send_polls": True,
-                    "can_send_other_messages": True,
-                    "can_add_web_page_previews": True
-                }
-            )
-            mongo.users.update_one(
-                {"id": user_id},
-                {"$unset": {f"muted_in.{chat.id}": ""}}
-            )
-            await update.message.reply_text(
-                f"🔊 <b>UNMUTED</b> 🔊\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"👤 <b>User ID:</b> {user_id}\n"
-                f"✅ <i>Voice restored!</i>",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            logger.error(f"Unmute failed: {e}")
-            await update.message.reply_text(f"❌ Failed to unmute: {e}")
     else:
         target_user, error = await resolve_target_user(update, context)
         if error:
             await update.message.reply_text(error)
             return
-        
-        try:
-            await chat.restrict_member(
-                user_id=target_user.id,
-                permissions={
-                    "can_send_messages": True,
-                    "can_send_media_messages": True,
-                    "can_send_polls": True,
-                    "can_send_other_messages": True,
-                    "can_add_web_page_previews": True
-                }
+        user_id = target_user.id
+    
+    try:
+        await chat.restrict_member(
+            user_id=user_id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_polls=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True
             )
-            mongo.users.update_one(
-                {"id": target_user.id},
-                {"$unset": {f"muted_in.{chat.id}": ""}}
-            )
-            await update.message.reply_text(
-                f"🔊 <b>UNMUTED</b> 🔊\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"👤 <b>User:</b> {get_user_mention(target_user)}\n"
-                f"✅ <i>Voice restored! You can speak now.</i>",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            logger.error(f"Unmute failed: {e}")
-            await update.message.reply_text(f"❌ Failed to unmute: {e}")
+        )
+        await mongo.db.users.update_one(
+            {"id": user_id},
+            {"$unset": {f"muted_in.{chat.id}": ""}}
+        )
+        await update.message.reply_text(
+            f"🔊 <b>UNMUTED</b> 🔊\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>User ID:</b> {user_id}\n"
+            f"✅ <i>Voice restored!</i>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Unmute failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to unmute: {str(e)}")
 
 @admin_only()
 @log_command("kick")
 async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kick a user from the group"""
+    """Kick a user"""
     target_user, error = await resolve_target_user(update, context)
     if error:
         await update.message.reply_text(error)
         return
     
-    if target_user.id == config.ADMIN_ID:
+    if target_user.id == config.admin_id:
         await update.message.reply_text("❌ Cannot kick bot owner.")
         return
     
@@ -1277,21 +1139,18 @@ async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not await bot_can_restrict_members(update.effective_chat, context):
-        await update.message.reply_text("❌ I need 'Restrict Members' permission to kick users.")
+        await update.message.reply_text("❌ I need 'Restrict Members' permission.")
         return
     
     try:
         chat = update.effective_chat
         
-        # Get reason
+        reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason provided"
         if update.message.reply_to_message:
             reason = " ".join(context.args) if context.args else "No reason provided"
-        else:
-            reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason provided"
         
-        # Kick user (ban and immediate unban)
         await chat.ban_member(user_id=target_user.id)
-        await asyncio.sleep(0.5)  # Small delay to ensure ban is processed
+        await asyncio.sleep(0.5)
         await chat.unban_member(user_id=target_user.id)
         
         await update.message.reply_text(
@@ -1301,84 +1160,55 @@ async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👋 <i>See you later!</i>",
             parse_mode=ParseMode.HTML
         )
-        
-    except Forbidden:
-        await update.message.reply_text("❌ I don't have permission to kick users.")
     except Exception as e:
-        logger.error(f"Kick failed: {e}")
-        await update.message.reply_text(f"❌ Failed to kick: {e}")
+        logger.error(f"Kick failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to kick: {str(e)}")
 
 @admin_only()
 @log_command("purge")
 async def purge_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Purge messages from chat"""
+    """Purge messages"""
     message = update.effective_message
     chat = update.effective_chat
     
-    # Default purge count
     count = 10
-    
     if context.args:
         try:
             count = int(context.args[0])
-            if count > 100:
-                await message.reply_text("❌ Maximum 100 messages can be purged at once.")
-                return
-            if count < 1:
-                await message.reply_text("❌ Must purge at least 1 message.")
+            if not 1 <= count <= 100:
+                await message.reply_text("❌ Can purge 1-100 messages.")
                 return
         except ValueError:
             await message.reply_text("❌ Invalid number.")
             return
     
     try:
-        # Adjust count to include the command itself
-        delete_count = count + 1
+        message_ids = [message.message_id]
         
-        # Collect message IDs to delete
-        # Note: get_chat_history is not available on ExtBot directly in all versions
-        # We should use a different approach or verify the correct method
-        message_ids = []
+        async for msg in context.bot.get_chat_history(chat.id, limit=count):
+            message_ids.append(msg.message_id)
+            if len(message_ids) >= count + 1:
+                break
         
-        # Correct way to get history in recent python-telegram-bot
-        # message_ids = [message.message_id] # Already have the current message
-        
-        # We'll try to delete messages one by one or in small batches
-        # since bulk delete has limitations on age and bot permissions
-        deleted = 0
-        current_id = message.message_id
-        
-        for i in range(delete_count):
+        for i in range(0, len(message_ids), 10):
+            batch = message_ids[i:i+10]
             try:
-                await context.bot.delete_message(chat_id=chat.id, message_id=current_id - i)
-                deleted += 1
-            except:
-                continue
+                await context.bot.delete_messages(chat.id, batch)
+            except Exception as e:
+                logger.warning(f"Failed to delete batch: {e}")
         
-        # Show confirmation
-        confirm_text = (
+        confirm_msg = await message.reply_text(
             f"🧹 <b>PURGE COMPLETE</b> 🧹\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"🗑️ <b>Messages:</b> {deleted}\n"
-            f"⚖️ <i>Action by Admin</i>"
-        )
-        confirm_msg = await context.bot.send_message(
-            chat_id=chat.id, 
-            text=confirm_text, 
+            f"🗑️ <b>Messages:</b> {len(message_ids)-1}\n"
+            f"⚖️ <i>Action by Admin</i>",
             parse_mode=ParseMode.HTML
         )
-        # Delete confirmation after 3 seconds
         asyncio.create_task(delete_after_delay(confirm_msg, 3))
         
-    except BadRequest as e:
-        if "message to delete not found" in str(e):
-            await message.reply_text("❌ Some messages could not be deleted (too old or not found).")
-        else:
-            logger.error(f"Purge failed: {e}")
-            await message.reply_text(f"❌ Failed to purge: {e.message}")
     except Exception as e:
-        logger.error(f"Purge failed: {e}")
-        await message.reply_text("❌ Failed to purge messages.")
+        logger.error(f"Purge failed: {e}", exc_info=True)
+        await message.reply_text(f"❌ Failed to purge: {str(e)}")
 
 @admin_only()
 @log_command("warn")
@@ -1389,7 +1219,7 @@ async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(error)
         return
     
-    if target_user.id == config.ADMIN_ID:
+    if target_user.id == config.admin_id:
         await update.message.reply_text("❌ Cannot warn bot owner.")
         return
     
@@ -1400,38 +1230,32 @@ async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = update.effective_chat
         
-        # Get reason
+        reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason provided"
         if update.message.reply_to_message:
             reason = " ".join(context.args) if context.args else "No reason provided"
-        else:
-            reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason provided"
         
-        # Add warning
-        warnings_count = mongo.add_warning(
+        warnings_count = await mongo.add_warning(
             user_id=target_user.id,
             group_id=chat.id,
             reason=reason,
             warned_by=update.effective_user.id
         )
         
-        group = await get_cached_group(chat.id)
-        max_warnings = group.get("max_warnings", config.MAX_WARNINGS)
+        group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+        max_warnings = group_data.get("max_warnings", config.max_warnings)
         
-        # Apply action based on warning count
         if warnings_count >= max_warnings:
-            # Mute for 24 hours instead of banning
-            mute_duration = 86400  # 24 hours
             await chat.restrict_member(
                 user_id=target_user.id,
-                permissions={"can_send_messages": False},
-                until_date=datetime.utcnow() + timedelta(seconds=mute_duration)
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=datetime.utcnow() + timedelta(seconds=MUTE_DURATION_WARN_MAX)
             )
             action_text = f"🔇 <b>MUTED 24 HOURS</b> (reached {max_warnings} warnings)"
         elif warnings_count == max_warnings - 1:
             await chat.restrict_member(
                 user_id=target_user.id,
-                permissions={"can_send_messages": False},
-                until_date=datetime.utcnow() + timedelta(hours=1)
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=datetime.utcnow() + timedelta(seconds=MUTE_DURATION_WARN_NEAR_MAX)
             )
             action_text = f"🔇 <b>MUTED 1 HOUR</b> (warning {warnings_count}/{max_warnings})"
         else:
@@ -1445,15 +1269,14 @@ async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚖️ <i>Action: {action_text}</i>",
             parse_mode=ParseMode.HTML
         )
-        
     except Exception as e:
-        logger.error(f"Warn failed: {e}")
+        logger.error(f"Warn failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Failed to warn user.")
 
 @admin_only()
 @log_command("unwarn")
 async def unwarn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Remove a warning from user"""
+    """Remove last warning"""
     target_user, error = await resolve_target_user(update, context)
     if error:
         await update.message.reply_text(error)
@@ -1462,21 +1285,13 @@ async def unwarn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     
     try:
-        # Resolve target user
-        target_user, error = await resolve_target_user(update, context)
-        if error:
-            await update.message.reply_text(error)
-            return
-
-        removed_count = mongo.clear_warnings(target_user.id, chat.id)
-        
-        if removed_count > 0:
+        removed = await mongo.remove_last_warning(target_user.id, chat.id)
+        if removed:
             await update.message.reply_text(
-                f"✅ <b>WARNS CLEARED</b> ✅\n"
+                f"✅ <b>WARN REMOVED</b> ✅\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"👤 <b>User:</b> {get_user_mention(target_user)}\n"
-                f"🗑️ <b>Removed:</b> {removed_count} warnings\n"
-                f"✨ <i>User is now clean.</i>",
+                f"✨ <i>One warning removed.</i>",
                 parse_mode=ParseMode.HTML
             )
         else:
@@ -1484,9 +1299,8 @@ async def unwarn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"ℹ️ {get_user_mention(target_user)} has no active warnings.",
                 parse_mode=ParseMode.HTML
             )
-            
     except Exception as e:
-        logger.error(f"Unwarn failed: {e}")
+        logger.error(f"Unwarn failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Failed to remove warning.")
 
 @admin_only()
@@ -1499,7 +1313,7 @@ async def view_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     
     try:
-        warnings_count = mongo.get_user_warnings(target_user.id, chat.id)
+        warnings_count = await mongo.get_user_warnings(target_user.id, chat.id)
         
         if warnings_count == 0:
             await update.message.reply_text(
@@ -1508,12 +1322,11 @@ async def view_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Get recent warnings
-        recent_warnings = list(mongo.warnings.find({
+        recent_warnings = await mongo.db.warnings.find({
             "user_id": target_user.id,
             "group_id": chat.id,
             "active": True
-        }).sort("timestamp", DESCENDING).limit(10))
+        }).sort("timestamp", -1).limit(10).to_list(None)
         
         warn_text = f"⚠️ <b>Warnings for {escape_html(target_user.first_name)}: {warnings_count}</b>\n\n"
         
@@ -1524,27 +1337,27 @@ async def view_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 warned_by_name = "Admin"
             
-            time_ago = format_time_ago(int((datetime.utcnow() - warn['timestamp']).total_seconds()))
-            reason = escape_html(warn['reason'])
+            time_ago = format_duration(int((datetime.utcnow() - warn['timestamp']).total_seconds()))
+            reason = escape_html(warn['reason'])[:50]
             warn_text += f"{i}. {reason}\n   <i>by {warned_by_name}, {time_ago}</i>\n\n"
         
         await update.message.reply_text(warn_text, parse_mode=ParseMode.HTML)
         
     except Exception as e:
-        logger.error(f"View warnings failed: {e}")
+        logger.error(f"View warnings failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Failed to retrieve warnings.")
 
 @admin_only()
 @log_command("promote")
 async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Promote a user to admin"""
+    """Promote user to admin"""
     target_user, error = await resolve_target_user(update, context)
     if error:
         await update.message.reply_text(error)
         return
     
     if not await bot_can_promote_members(update.effective_chat, context):
-        await update.message.reply_text("❌ I need 'Add Admins' permission to promote users.")
+        await update.message.reply_text("❌ I need 'Add Admins' permission.")
         return
     
     try:
@@ -1570,20 +1383,20 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        logger.error(f"Promote failed: {e}")
-        await update.message.reply_text(f"❌ Promote failed: {e}")
+        logger.error(f"Promote failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Promote failed: {str(e)}")
 
 @admin_only()
 @log_command("demote")
 async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Demote an admin to member"""
+    """Demote admin to member"""
     target_user, error = await resolve_target_user(update, context)
     if error:
         await update.message.reply_text(error)
         return
     
     if not await bot_can_promote_members(update.effective_chat, context):
-        await update.message.reply_text("❌ I need 'Add Admins' permission to demote users.")
+        await update.message.reply_text("❌ I need 'Add Admins' permission.")
         return
     
     try:
@@ -1609,127 +1422,120 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        logger.error(f"Demote failed: {e}")
-        await update.message.reply_text(f"❌ Demote failed: {e}")
+        logger.error(f"Demote failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Demote failed: {str(e)}")
 
-# === SECURITY MODULES ===
-_flood_tracker: Dict[str, List[float]] = defaultdict(list)
+# =============================================================================
+# SECURITY MODULES
+# =============================================================================
 
 async def antiflood_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check and handle flood"""
+    """Anti-flood protection"""
     user = update.effective_user
     chat = update.effective_chat
     
-    # Skip checks for admins and owner
-    if user.id == config.ADMIN_ID or await is_admin(chat, user.id):
+    if user.id == config.admin_id or await is_admin(chat, user.id):
         return True
     
-    group = await get_cached_group(chat.id)
-    if not group or not group.get("antiflood_enabled", False):
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    if not group_data.get("antiflood_enabled", False):
         return True
     
-    flood_limit = group.get("antiflood_limit", config.FLOOD_LIMIT)
-    flood_time = group.get("antiflood_time", config.FLOOD_TIME)
+    flood_limit = group_data.get("antiflood_limit", config.flood_limit)
+    flood_time = group_data.get("antiflood_time", config.flood_time)
     
     tracker_key = f"{chat.id}_{user.id}"
     current_time = time.time()
     
-    # Clean old messages
-    user_messages = [t for t in _flood_tracker[tracker_key] if current_time - t < flood_time]
-    user_messages.append(current_time)
-    _flood_tracker[tracker_key] = user_messages
-    
-    # Check if user is flooding
-    if len(user_messages) > flood_limit:
-        try:
-            mute_duration = 300  # 5 minutes
-            await chat.restrict_member(
-                user_id=user.id,
-                permissions={"can_send_messages": False},
-                until_date=datetime.utcnow() + timedelta(seconds=mute_duration)
-            )
-            
-            # Log the action
-            mongo.logs.insert_one({
-                "group_id": chat.id,
-                "user_id": user.id,
-                "action": "auto_mute_flood",
-                "details": f"Sent {len(user_messages)} messages in {flood_time}s",
-                "timestamp": datetime.utcnow()
-            })
-            
-            warning_msg = await update.message.reply_text(
-                f"⚠️ <b>Anti-Flood Triggered!</b>\n"
-                f"User {user.mention_html()} muted for {format_duration(mute_duration)}.",
-                parse_mode=ParseMode.HTML
-            )
-            
-            # Delete the flooding message
+    async with _flood_lock:
+        user_messages = [t for t in _flood_tracker[tracker_key] if current_time - t < flood_time]
+        user_messages.append(current_time)
+        _flood_tracker[tracker_key] = user_messages
+        
+        if len(user_messages) > flood_limit:
             try:
-                await update.message.delete()
-            except:
-                pass
-            
-            # Auto-delete warning after 10 seconds
-            await asyncio.sleep(10)
-            await warning_msg.delete()
-            
-            return False
-        except Exception as e:
-            logger.error(f"Anti-flood action failed: {e}")
+                await chat.restrict_member(
+                    user_id=user.id,
+                    permissions=ChatPermissions(can_send_messages=False),
+                    until_date=datetime.utcnow() + timedelta(seconds=MUTE_DURATION_FLOOD)
+                )
+                
+                await mongo.db.logs.insert_one({
+                    "group_id": chat.id,
+                    "user_id": user.id,
+                    "action": "auto_mute_flood",
+                    "details": f"Sent {len(user_messages)} messages in {flood_time}s",
+                    "timestamp": datetime.utcnow()
+                })
+                
+                warning_msg = await update.message.reply_text(
+                    f"⚠️ <b>Anti-Flood Triggered!</b>\n"
+                    f"User {user.mention_html()} muted for {format_duration(MUTE_DURATION_FLOOD)}.",
+                    parse_mode=ParseMode.HTML
+                )
+                
+                try:
+                    await update.message.delete()
+                except:
+                    pass
+                
+                asyncio.create_task(delete_after_delay(warning_msg, 10))
+                return False
+            except Exception as e:
+                logger.error(f"Anti-flood action failed: {e}")
     
     return True
 
 @admin_only()
 async def toggle_antiflood(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Toggle anti-flood protection"""
+    """Toggle anti-flood"""
     chat = update.effective_chat
-    group = await get_cached_group(chat.id)
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
     
-    new_status = not group.get("antiflood_enabled", False)
+    new_status = not group_data.get("antiflood_enabled", False)
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
             {"$set": {
                 "id": chat.id,
                 "title": chat.title,
                 "antiflood_enabled": new_status,
-                "antiflood_limit": group.get("antiflood_limit", config.FLOOD_LIMIT),
-                "antiflood_time": group.get("antiflood_time", config.FLOOD_TIME)
+                "antiflood_limit": group_data.get("antiflood_limit", config.flood_limit),
+                "antiflood_time": group_data.get("antiflood_time", config.flood_time)
             }},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         status_emoji = "✅ On" if new_status else "❌ Off"
         await update.message.reply_text(f"🛡️ Anti-Flood: {status_emoji}")
-    except PyMongoError as e:
-        logger.error(f"Toggle antiflood failed: {e}")
+    except Exception as e:
+        logger.error(f"Toggle antiflood failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
 async def configure_antiflood(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Configure anti-flood settings"""
+    """Configure anti-flood"""
     if len(context.args) < 2:
         await update.message.reply_text("❌ Usage: /setflood <limit> <time_in_seconds>")
         return
-    
-    chat = update.effective_chat
     
     try:
         limit = int(context.args[0])
         time_window = int(context.args[1])
         
-        if limit < 2 or limit > 20:
-            await update.message.reply_text("❌ Limit must be between 2-20.")
+        if not 2 <= limit <= 20:
+            await update.message.reply_text("❌ Limit must be 2-20.")
             return
         
-        if time_window < 5 or time_window > 60:
-            await update.message.reply_text("❌ Time window must be between 5-60 seconds.")
+        if not 5 <= time_window <= 60:
+            await update.message.reply_text("❌ Time window must be 5-60 seconds.")
             return
         
-        mongo.groups.update_one(
+        chat = update.effective_chat
+        
+        await mongo.db.groups.update_one(
             {"id": chat.id},
             {"$set": {
                 "id": chat.id,
@@ -1740,7 +1546,7 @@ async def configure_antiflood(update: Update, context: ContextTypes.DEFAULT_TYPE
             }},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         await update.message.reply_text(
             f"✅ Anti-Flood configured:\n"
@@ -1749,14 +1555,14 @@ async def configure_antiflood(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"• Status: Enabled"
         )
     except ValueError:
-        await update.message.reply_text("❌ Invalid numbers provided.")
-    except PyMongoError as e:
-        logger.error(f"Configure antiflood failed: {e}")
-        await update.message.reply_text("❌ Database error.")
+        await update.message.reply_text("❌ Invalid numbers.")
 
-# === AUTO-MODERATION ===
+# =============================================================================
+# AUTO-MODERATION
+# =============================================================================
+
 async def scan_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Scan messages for auto-moderation"""
+    """Scan messages for violations"""
     message = update.effective_message
     if not message or not message.text:
         return
@@ -1764,19 +1570,17 @@ async def scan_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     
-    if user.id == config.ADMIN_ID or await is_admin(chat, user.id):
+    if user.id == config.admin_id or await is_admin(chat, user.id):
         return
     
-    group = await get_cached_group(chat.id)
-    if not group or not group.get("automod_enabled", False):
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    if not group_data.get("automod_enabled", False):
         return
     
     text = message.text.lower()
     
-    # Anti-swear
-    if group.get("anti_swear_enabled", False):
-        bad_words = group.get("bad_words", ["fuck", "shit", "bitch", "asshole", "dick"])
-        
+    if group_data.get("anti_swear_enabled", False):
+        bad_words = group_data.get("bad_words", BAD_WORDS_DEFAULT)
         for word in bad_words:
             if re.search(r'\b' + re.escape(word) + r'\b', text, re.IGNORECASE):
                 await handle_violation(update, context, "bad_word", f"Used forbidden word: {word}")
@@ -1786,8 +1590,7 @@ async def scan_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
                 return
     
-    # Anti-link
-    if group.get("anti_link_enabled", False):
+    if group_data.get("anti_link_enabled", False):
         has_link = False
         
         urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
@@ -1809,36 +1612,36 @@ async def scan_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
 async def handle_violation(update: Update, context: ContextTypes.DEFAULT_TYPE, violation_type: str, details: str):
-    """Handle auto-moderation violation"""
+    """Handle auto-mod violation"""
     user = update.effective_user
     chat = update.effective_chat
     
-    warnings_count = mongo.add_warning(
+    warnings_count = await mongo.add_warning(
         user_id=user.id,
         group_id=chat.id,
         reason=details,
         warned_by=context.bot.id
     )
     
-    group = await get_cached_group(chat.id)
-    max_warnings = group.get("max_warnings", config.MAX_WARNINGS)
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    max_warnings = group_data.get("max_warnings", config.max_warnings)
     
     if warnings_count >= max_warnings:
-        await chat.restrict_member(
-            user_id=user.id,
-            permissions=ChatPermissions(can_send_messages=False),
-            until_date=int(time.time()) + 86400
-        )
+        mute_duration = MUTE_DURATION_WARN_MAX
         action_text = f"🔇 <b>MUTED 24H</b> 🔇\n<i>(Reached {max_warnings} warnings)</i>"
     elif warnings_count == max_warnings - 1:
+        mute_duration = MUTE_DURATION_WARN_NEAR_MAX
+        action_text = f"🔇 <b>MUTED 1 HOUR</b> 🔇\n<i>(Warning {warnings_count}/{max_warnings})</i>"
+    else:
+        mute_duration = None
+        action_text = f"⚠️ <b>WARNING {warnings_count}/{max_warnings}</b> ⚠️"
+    
+    if mute_duration:
         await chat.restrict_member(
             user_id=user.id,
             permissions=ChatPermissions(can_send_messages=False),
-            until_date=datetime.utcnow() + timedelta(hours=1)
+            until_date=datetime.utcnow() + timedelta(seconds=mute_duration)
         )
-        action_text = f"🔇 <b>MUTED 1 HOUR</b> 🔇\n<i>(Warning {warnings_count}/{max_warnings})</i>"
-    else:
-        action_text = f"⚠️ <b>WARNING {warnings_count}/{max_warnings}</b> ⚠️"
     
     await update.message.reply_text(
         f"{action_text}\n\n"
@@ -1850,92 +1653,79 @@ async def handle_violation(update: Update, context: ContextTypes.DEFAULT_TYPE, v
 
 @admin_only()
 async def toggle_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Toggle auto-moderation"""
+    """Toggle auto-mod"""
     chat = update.effective_chat
-    group = await get_cached_group(chat.id)
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
     
-    new_status = not group.get("automod_enabled", False)
+    new_status = not group_data.get("automod_enabled", False)
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
-            {"$set": {
-                "id": chat.id,
-                "title": chat.title,
-                "automod_enabled": new_status
-            }},
+            {"$set": {"automod_enabled": new_status}},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         status_emoji = "✅ On" if new_status else "❌ Off"
         await update.message.reply_text(f"🤖 Auto-Mod: {status_emoji}")
-    except PyMongoError as e:
-        logger.error(f"Toggle automod failed: {e}")
+    except Exception as e:
+        logger.error(f"Toggle automod failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
 async def toggle_antilink(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Toggle anti-link"""
     chat = update.effective_chat
-    group = await get_cached_group(chat.id)
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
     
-    new_status = not group.get("anti_link_enabled", False)
+    new_status = not group_data.get("anti_link_enabled", False)
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
-            {"$set": {
-                "id": chat.id,
-                "title": chat.title,
-                "anti_link_enabled": new_status
-            }},
+            {"$set": {"anti_link_enabled": new_status}},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         status_emoji = "✅ On" if new_status else "❌ Off"
         await update.message.reply_text(f"🔗 Anti-Link: {status_emoji}")
-    except PyMongoError as e:
-        logger.error(f"Toggle antilink failed: {e}")
+    except Exception as e:
+        logger.error(f"Toggle antilink failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
 async def toggle_antiswear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Toggle anti-swear"""
     chat = update.effective_chat
-    group = await get_cached_group(chat.id)
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
     
-    new_status = not group.get("anti_swear_enabled", False)
+    new_status = not group_data.get("anti_swear_enabled", False)
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
-            {"$set": {
-                "id": chat.id,
-                "title": chat.title,
-                "anti_swear_enabled": new_status
-            }},
+            {"$set": {"anti_swear_enabled": new_status}},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         status_emoji = "✅ On" if new_status else "❌ Off"
         await update.message.reply_text(f"🤬 Anti-Swear: {status_emoji}")
-    except PyMongoError as e:
-        logger.error(f"Toggle antiswear failed: {e}")
+    except Exception as e:
+        logger.error(f"Toggle antiswear failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
 async def set_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set custom bad words list"""
+    """Set custom bad words"""
     if not context.args:
-        group = await get_cached_group(update.effective_chat.id)
-        bad_words = group.get("bad_words", ["fuck", "shit", "bitch", "asshole", "dick"])
+        group_data = await mongo.db.groups.find_one({"id": update.effective_chat.id}) or {}
+        bad_words = group_data.get("bad_words", BAD_WORDS_DEFAULT)
         await update.message.reply_text(
-            f"Current bad words list:\n<code>{', '.join(bad_words)}</code>\n\n"
-            "To set new list: /setbadwords word1 word2 word3",
-            parse_mode=ParseMode.HTML
+            f"Current bad words:\n<code>{', '.join(bad_words)}</code>\n\n"
+            "Usage: /setbadwords word1 word2 word3"
         )
         return
     
@@ -1943,27 +1733,28 @@ async def set_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
             {"$set": {
-                "id": chat.id,
-                "title": chat.title,
                 "bad_words": bad_words,
                 "anti_swear_enabled": True
             }},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         await update.message.reply_text(
-            f"✅ Bad words list updated:\n<code>{', '.join(bad_words)}</code>",
+            f"✅ Bad words updated:\n<code>{', '.join(bad_words)}</code>",
             parse_mode=ParseMode.HTML
         )
-    except PyMongoError as e:
-        logger.error(f"Set bad words failed: {e}")
+    except Exception as e:
+        logger.error(f"Set bad words failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
-# === CAPTCHA SYSTEM ===
+# =============================================================================
+# CAPTCHA SYSTEM
+# =============================================================================
+
 async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle new members with CAPTCHA"""
     message = update.effective_message
@@ -1971,8 +1762,8 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     for member in message.new_chat_members:
         if member.is_bot:
-            group = await get_cached_group(chat.id)
-            if group and group.get("anti_bot_enabled", False):
+            group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+            if group_data.get("anti_bot_enabled", False):
                 try:
                     await chat.ban_member(user_id=member.id)
                     await message.reply_text(
@@ -1983,10 +1774,7 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     pass
             continue
         
-        group = await get_cached_group(chat.id)
-        
-        # Log user for statistics/mentions
-        mongo.users.update_one(
+        await mongo.db.users.update_one(
             {"id": member.id},
             {"$set": {
                 "id": member.id,
@@ -1996,15 +1784,11 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
             }},
             upsert=True
         )
-
-        if not group or not group.get("captcha_enabled", False):
-            # If captcha is disabled, send welcome message immediately for this user
-            class MockUpdate:
-                def __init__(self, chat, members):
-                    self.effective_chat = chat
-                    self.message = message # Use the original message
-            
-            await send_welcome_message(MockUpdate(chat, [member]), context)
+        
+        group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+        
+        if not group_data.get("captcha_enabled", False):
+            await _send_welcome(chat, member, context)
             continue
         
         if not await bot_can_restrict_members(chat, context):
@@ -2019,21 +1803,9 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except:
             pass
         
-        # Generate math problem
         num1, num2 = random.randint(1, 20), random.randint(1, 20)
         answer = str(num1 + num2)
         
-        captcha_data = {
-            "user_id": member.id,
-            "group_id": chat.id,
-            "challenge_type": "math",
-            "answer": answer,
-            "message_id": None,
-            "created_at": datetime.utcnow(),
-            "expires_at": datetime.utcnow() + timedelta(seconds=group.get("captcha_timeout", 120))
-        }
-        
-        # Generate options
         options = [int(answer) + i for i in range(-2, 3) if i != 0]
         options.append(int(answer))
         random.shuffle(options)
@@ -2045,20 +1817,26 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         captcha_msg = await message.reply_text(
             f"🧩 <b>Welcome {escape_html(member.first_name)}!</b>\n\n"
-            f"Solve to unlock chat:\n"
-            f"<code>{num1} + {num2} = ?</code>\n\n"
-            f"⏰ Timeout: {group.get('captcha_timeout', 120)}s",
+            f"Solve to unlock:\n<code>{num1} + {num2} = ?</code>\n\n"
+            f"⏰ Timeout: {group_data.get('captcha_timeout', config.captcha_timeout)}s",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML
         )
         
-        captcha_data["message_id"] = captcha_msg.message_id
-        mongo.captchas.insert_one(captcha_data)
+        await mongo.db.captchas.insert_one({
+            "user_id": member.id,
+            "group_id": chat.id,
+            "answer": answer,
+            "message_id": captcha_msg.message_id,
+            "created_at": datetime.utcnow(),
+            "expires_at": datetime.utcnow() + timedelta(
+                seconds=group_data.get("captcha_timeout", config.captcha_timeout)
+            )
+        })
         
-        # Schedule auto-kick
         context.job_queue.run_once(
             auto_kick_if_failed,
-            group.get("captcha_timeout", 120),
+            group_data.get("captcha_timeout", config.captcha_timeout),
             data={
                 "user_id": member.id,
                 "chat_id": chat.id,
@@ -2066,49 +1844,48 @@ async def new_member_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE)
             }
         )
 
-async def handle_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle CAPTCHA answer"""
     query = update.callback_query
     data = query.data.split("_")
     
-    if len(data) != 4 or data[0] != "captcha":
+    if len(data) != 4:
+        await query.answer("❌ Invalid CAPTCHA.", show_alert=True)
         return
     
     _, user_id_str, chat_id_str, answer = data
     user_id, chat_id = int(user_id_str), int(chat_id_str)
     
     if query.from_user.id != user_id:
-        await query.answer("❌ This captcha is not for you!", show_alert=True)
+        await query.answer("❌ This CAPTCHA is not for you!", show_alert=True)
         return
     
-    captcha = mongo.captchas.find_one({
-        "user_id": user_id,
-        "group_id": chat_id,
-        "expires_at": {"$gt": datetime.utcnow()}
-    })
-    
-    if not captcha:
-        await query.answer("❌ Expired or invalid captcha!", show_alert=True)
-        try:
-            await query.message.delete()
-        except:
-            pass
-        return
-    
-    # If captcha passed, send welcome message
-    if str(answer) == str(captcha["answer"]):
-        try:
-            # Unrestrict user
+    try:
+        captcha = await mongo.db.captchas.find_one({
+            "user_id": user_id,
+            "group_id": chat_id,
+            "expires_at": {"$gt": datetime.utcnow()}
+        })
+        
+        if not captcha:
+            await query.answer("❌ Expired or invalid CAPTCHA!", show_alert=True)
+            try:
+                await query.message.delete()
+            except:
+                pass
+            return
+        
+        if str(answer) == str(captcha["answer"]):
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
                 user_id=user_id,
-                permissions={
-                    "can_send_messages": True,
-                    "can_send_media_messages": True,
-                    "can_send_polls": True,
-                    "can_send_other_messages": True,
-                    "can_add_web_page_previews": True
-                }
+                permissions=ChatPermissions(
+                    can_send_messages=True,
+                    can_send_media_messages=True,
+                    can_send_polls=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True
+                )
             )
             
             await query.answer("✅ Verified!", show_alert=True)
@@ -2117,88 +1894,47 @@ async def handle_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
             
-            mongo.captchas.delete_one({"_id": captcha["_id"]})
+            await mongo.db.captchas.delete_one({"_id": captcha["_id"]})
             
-            # Send welcome message after verification
-            # Mocking an update object for send_welcome_message
-            class MockUser:
-                def __init__(self, id, first_name, username):
-                    self.id = id
-                    self.first_name = first_name
-                    self.username = username
-                    self.is_bot = False
-            
-            class MockMessage:
-                def __init__(self, chat, new_members):
-                    self.chat = chat
-                    self.new_chat_members = new_members
-                async def reply_text(self, *args, **kwargs):
-                    return await context.bot.send_message(self.chat.id, *args, **kwargs)
-
-            class MockUpdate:
-                def __init__(self, chat, members):
-                    self.effective_chat = chat
-                    self.message = MockMessage(chat, members)
-            
-            # Find the user object from the captcha or message context
-            # For simplicity, we can just call send_welcome_message with a constructed update
-            # or refactor send_welcome_message to accept user objects.
-            # Let's just construct a minimal update.
-            user_data = mongo.users.find_one({"id": user_id}) or {}
-            mock_member = MockUser(user_id, user_data.get("first_name", "User"), user_data.get("username"))
-            mock_update = MockUpdate(query.message.chat, [mock_member])
-            await send_welcome_message(mock_update, context)
-
-        except Exception as e:
-            logger.error(f"Captcha success processing failed: {e}")
-            await query.answer("❌ Error during verification.")
-            
-            # Delete captcha message
-            await query.message.delete()
-            
-            # Update user record
-            mongo.users.update_one(
-                {"id": user_id},
-                {"$set": {f"captcha_passed_{chat_id}": True}}
+            user_data = await mongo.db.users.find_one({"id": user_id}) or {}
+            member = User(
+                id=user_id,
+                first_name=user_data.get("first_name", "User"),
+                username=user_data.get("username"),
+                is_bot=False
             )
+            chat_obj = await context.bot.get_chat(chat_id)
+            await _send_welcome(chat_obj, member, context)
+        else:
+            await query.answer("❌ Wrong answer! Try again.", show_alert=True)
             
-            # Remove captcha from DB
-            mongo.captchas.delete_one({"_id": captcha["_id"]})
-            
-            await query.answer("✅ Verified! You can now chat.", show_alert=False)
-            
-        except Exception as e:
-            logger.error(f"Captcha verification failed: {e}")
-            await query.answer("❌ Error verifying. Please contact an admin.", show_alert=True)
-    else:
-        await query.answer("❌ Wrong answer! Try again.", show_alert=True)
+    except Exception as e:
+        logger.error(f"CAPTCHA verification failed: {e}", exc_info=True)
+        await query.answer("❌ Error verifying. Contact admin.", show_alert=True)
 
 async def auto_kick_if_failed(context: ContextTypes.DEFAULT_TYPE):
-    """Auto-kick user if CAPTCHA not solved in time"""
+    """Auto-kick on CAPTCHA timeout"""
     job_data = context.job.data
     
-    captcha = mongo.captchas.find_one({
-        "user_id": job_data["user_id"],
-        "group_id": job_data["chat_id"],
-        "expires_at": {"$lt": datetime.utcnow()}
-    })
-    
-    if captcha:
-        try:
-            # Kick user
+    try:
+        captcha = await mongo.db.captchas.find_one({
+            "user_id": job_data["user_id"],
+            "group_id": job_data["chat_id"],
+            "expires_at": {"$lt": datetime.utcnow()}
+        })
+        
+        if captcha:
             await context.bot.ban_chat_member(
                 chat_id=job_data["chat_id"],
                 user_id=job_data["user_id"]
             )
             
-            # Notify group
             await context.bot.send_message(
                 job_data["chat_id"],
-                f"⏰ <b>Time's up!</b> User <code>{job_data['user_id']}</code> failed captcha and was removed.",
+                f"⏰ <b>Time's up!</b> User {job_data['user_id']} failed CAPTCHA.",
                 parse_mode=ParseMode.HTML
             )
             
-            # Delete captcha message
             try:
                 await context.bot.delete_message(
                     job_data["chat_id"],
@@ -2207,37 +1943,31 @@ async def auto_kick_if_failed(context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
             
-            # Remove from DB
-            mongo.captchas.delete_one({"_id": captcha["_id"]})
+            await mongo.db.captchas.delete_one({"_id": captcha["_id"]})
             
-        except Exception as e:
-            logger.error(f"Auto-kick failed: {e}")
+    except Exception as e:
+        logger.error(f"Auto-kick failed: {e}", exc_info=True)
 
 @admin_only()
 async def toggle_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Toggle CAPTCHA"""
     chat = update.effective_chat
-    group = await get_cached_group(chat.id)
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
     
-    new_status = not group.get("captcha_enabled", False)
+    new_status = not group_data.get("captcha_enabled", False)
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
-            {"$set": {
-                "id": chat.id,
-                "title": chat.title,
-                "captcha_enabled": new_status,
-                "captcha_timeout": group.get("captcha_timeout", config.CAPTCHA_TIMEOUT)
-            }},
+            {"$set": {"captcha_enabled": new_status}},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         status_emoji = "✅ On" if new_status else "❌ Off"
         await update.message.reply_text(f"🔐 CAPTCHA: {status_emoji}")
-    except PyMongoError as e:
-        logger.error(f"Toggle captcha failed: {e}")
+    except Exception as e:
+        logger.error(f"Toggle captcha failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
@@ -2249,391 +1979,149 @@ async def configure_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         timeout = int(context.args[0])
-        if timeout < 30 or timeout > 600:
-            await update.message.reply_text("❌ Timeout must be between 30-600 seconds.")
+        if not 30 <= timeout <= 600:
+            await update.message.reply_text("❌ Timeout must be 30-600 seconds.")
             return
         
         chat = update.effective_chat
         
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
             {"$set": {
-                "id": chat.id,
-                "title": chat.title,
                 "captcha_timeout": timeout,
                 "captcha_enabled": True
             }},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         await update.message.reply_text(f"✅ CAPTCHA timeout set to {timeout} seconds.")
     except ValueError:
-        await update.message.reply_text("❌ Invalid timeout value.")
-    except PyMongoError as e:
-        logger.error(f"Configure captcha failed: {e}")
+        await update.message.reply_text("❌ Invalid timeout.")
+    except Exception as e:
+        logger.error(f"Configure captcha failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
-# === RULES & NOTES ===
-@admin_only()
-async def set_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set group rules"""
-    if not context.args:
-        await update.message.reply_text("❌ Provide rules text.")
+# =============================================================================
+# WELCOME/GOODBYE
+# =============================================================================
+
+async def _send_welcome(chat: Chat, member: User, context: ContextTypes.DEFAULT_TYPE):
+    """Internal welcome sender"""
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    
+    if not group_data.get("welcome_enabled", False):
         return
     
-    chat = update.effective_chat
-    rules_text = update.message.text_html.split(None, 1)[1] if len(context.args) > 0 else ""
+    template = group_data.get(
+        "welcome_message",
+        "🎉 <b>Welcome to {chat_title}!</b>\n\nHello {user_name}!"
+    )
     
-    if not rules_text:
-        await update.message.reply_text("❌ Provide rules text.")
-        return
+    welcome_text = template.format(
+        chat_title=escape_html(chat.title),
+        user_name=escape_html(member.first_name),
+        user_mention=get_user_mention(member),
+        user_id=member.id,
+        username=f"@{member.username}" if member.username else "No username"
+    )
+    
+    buttons = []
+    if "welcome_buttons" in group_data:
+        for btn in group_data["welcome_buttons"]:
+            buttons.append([InlineKeyboardButton(btn['text'], url=btn['url'])])
     
     try:
-        mongo.groups.update_one(
-            {"id": chat.id},
-            {"$set": {
-                "id": chat.id,
-                "title": chat.title,
-                "rules": rules_text
-            }},
-            upsert=True
+        await context.bot.send_message(
+            chat.id,
+            welcome_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
         )
-        invalidate_group_cache(chat.id)
-        await update.message.reply_text("✅ Rules updated successfully.")
-    except PyMongoError as e:
-        logger.error(f"Set rules failed: {e}")
-        await update.message.reply_text("❌ Database error.")
-
-async def show_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show group rules"""
-    chat = update.effective_chat
-    group = await get_cached_group(chat.id)
-    
-    rules = group.get("rules") if group else None
-    
-    if rules:
-        await update.message.reply_text(
-            f"📜 <b>Group Rules</b>\n\n{escape_html(rules)}",
-            parse_mode=ParseMode.HTML
-        )
-    else:
-        await update.message.reply_text("❌ No rules set for this group.")
-
-async def check_notes_and_filters(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Auto-reply to filters and notes"""
-    if not update.message or not update.message.text:
-        return
-    
-    text = update.message.text
-    if text.startswith("/"):
-        return
-    
-    chat_id = update.effective_chat.id
-    group = await get_cached_group(chat_id)
-    if not group:
-        return
-    
-    # Check filters first (exact and keyword)
-    if "filters" in group:
-        for keyword, response in group["filters"].items():
-            if keyword.lower() in text.lower():
-                await update.message.reply_text(response)
-                return
-
-    # Notes are usually triggered by /name, but we can also check for keywords if desired.
-    # However, the standard behavior for this bot's /get command is separate.
-    # We'll stick to filters for auto-replies.
-
-@admin_only()
-async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Save a note"""
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Usage: /note <name> <content>")
-        return
-    
-    chat = update.effective_chat
-    note_name = context.args[0].lower()
-    # Get content preserving formatting and newlines
-    # Find the position after the note name in the original text
-    original_text = update.message.text_html
-    parts = original_text.split(None, 2)
-    if len(parts) < 3:
-        await update.message.reply_text("❌ Usage: /note <name> <content>")
-        return
-    note_content = parts[2]
-    
-    try:
-        mongo.groups.update_one(
-            {"id": chat.id},
-            {"$set": {f"notes.{note_name}": note_content}},
-            upsert=True
-        )
-        invalidate_group_cache(chat.id)
-        await update.message.reply_text(
-            f"📝 <b>NOTE SAVED</b> 📝\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🔑 <b>Keyword:</b> {note_name}\n"
-            f"📝 <i>Use '/get {note_name}' to see it.</i>",
-            parse_mode=ParseMode.HTML
-        )
-    except PyMongoError as e:
-        logger.error(f"Save note failed: {e}")
-        await update.message.reply_text("❌ Database error.")
-
-async def get_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get a note"""
-    if not context.args:
-        await update.message.reply_text("❌ Usage: /get <note_name>")
-        return
-    
-    chat = update.effective_chat
-    note_name = context.args[0].lower()
-    group = await get_cached_group(chat.id)
-    
-    if group and "notes" in group and note_name in group["notes"]:
-        await update.message.reply_text(group["notes"][note_name])
-    else:
-        await update.message.reply_text("❌ Note not found.")
-
-@admin_only()
-async def del_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete a note"""
-    if not context.args:
-        await update.message.reply_text("❌ Usage: /delnote <name>")
-        return
-    
-    chat = update.effective_chat
-    note_name = context.args[0].lower()
-    
-    try:
-        result = mongo.groups.update_one(
-            {"id": chat.id},
-            {"$unset": {f"notes.{note_name}": ""}}
-        )
-        
-        if result.modified_count > 0:
-            invalidate_group_cache(chat.id)
-            await update.message.reply_text(
-                f"🗑️ <b>NOTE DELETED</b> 🗑️\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"🔑 <b>Keyword:</b> {note_name}\n"
-                f"❌ <i>Note removed from database.</i>",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await update.message.reply_text("❌ Note not found.")
-    except PyMongoError as e:
-        logger.error(f"Delete note failed: {e}")
-        await update.message.reply_text("❌ Database error.")
-
-@admin_only()
-async def add_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add a filter"""
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Usage: /filter <keyword> <response>")
-        return
-    
-    chat = update.effective_chat
-    keyword = context.args[0].lower()
-    # Get response preserving formatting and newlines
-    original_text = update.message.text_html
-    parts = original_text.split(None, 2)
-    if len(parts) < 3:
-        await update.message.reply_text("❌ Usage: /filter <keyword> <response>")
-        return
-    response = parts[2]
-    
-    try:
-        mongo.groups.update_one(
-            {"id": chat.id},
-            {"$set": {f"filters.{keyword}": response}},
-            upsert=True
-        )
-        invalidate_group_cache(chat.id)
-        await update.message.reply_text(
-            f"🛡️ <b>FILTER ADDED</b> 🛡️\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🔑 <b>Keyword:</b> {keyword}\n"
-            f"✅ <i>Auto-reply is active.</i>",
-            parse_mode=ParseMode.HTML
-        )
-    except PyMongoError as e:
-        logger.error(f"Add filter failed: {e}")
-        await update.message.reply_text("❌ Database error.")
-
-@admin_only()
-async def stop_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Stop a filter"""
-    if not context.args:
-        await update.message.reply_text("❌ Usage: /stop <keyword>")
-        return
-    
-    chat = update.effective_chat
-    keyword = context.args[0].lower()
-    
-    try:
-        result = mongo.groups.update_one(
-            {"id": chat.id},
-            {"$unset": {f"filters.{keyword}": ""}}
-        )
-        
-        if result.modified_count > 0:
-            invalidate_group_cache(chat.id)
-            await update.message.reply_text(
-                f"🗑️ <b>FILTER REMOVED</b> 🛡️\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"🔑 <b>Keyword:</b> {keyword}\n"
-                f"❌ <i>Auto-reply disabled.</i>",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await update.message.reply_text("❌ Filter not found.")
-    except PyMongoError as e:
-        logger.error(f"Stop filter failed: {e}")
-        await update.message.reply_text("❌ Database error.")
-
-# === WELCOME/GOODBYE ===
-async def send_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send welcome message"""
-    chat = update.effective_chat
-    group = await get_cached_group(chat.id)
-    
-    if not group or not group.get("welcome_enabled", False):
-        return
-    
-    for member in update.message.new_chat_members:
-        if member.is_bot:
-            continue
-        
-        welcome_template = group.get(
-            "welcome_message",
-            "🎉 <b>Welcome to {chat_title}!</b>\n\nHello {user_name}!"
-        )
-        
-        welcome_text = welcome_template.format(
-            chat_title=escape_html(chat.title),
-            user_name=escape_html(member.first_name),
-            user_mention=get_user_mention(member),
-            user_id=member.id,
-            username=f"@{member.username}" if member.username else "No username"
-        )
-        
-        decorated_welcome = (
-            f"{welcome_text}"
-        )
-        
-        buttons = []
-        if "welcome_buttons" in group:
-            for btn in group["welcome_buttons"]:
-                buttons.append([InlineKeyboardButton(btn['text'], url=btn['url'])])
-        
-        try:
-            await update.message.reply_text(
-                decorated_welcome,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
-            )
-        except Exception as e:
-            logger.error(f"Failed to send welcome: {e}")
+    except Exception as e:
+        logger.error(f"Failed to send welcome: {e}", exc_info=True)
 
 async def send_goodbye_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send goodbye message"""
     chat = update.effective_chat
-    group = await get_cached_group(chat.id)
-    
-    if not group or not group.get("goodbye_enabled", False):
-        return
-    
     user = update.message.left_chat_member
+    
     if user.is_bot:
         return
     
-    goodbye_template = group.get(
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    
+    if not group_data.get("goodbye_enabled", False):
+        return
+    
+    template = group_data.get(
         "goodbye_message",
         "👋 <b>{user_name}</b> has left the group."
     )
     
-    goodbye_text = goodbye_template.format(
+    goodbye_text = template.format(
         user_name=escape_html(user.first_name),
         user_mention=get_user_mention(user)
     )
     
-    decorated_goodbye = (f"{goodbye_text}"
-    )
-    
     try:
-        await update.message.reply_text(decorated_goodbye, parse_mode=ParseMode.HTML)
+        await update.message.reply_text(goodbye_text, parse_mode=ParseMode.HTML)
     except Exception as e:
-        logger.error(f"Failed to send goodbye: {e}")
+        logger.error(f"Failed to send goodbye: {e}", exc_info=True)
 
 @admin_only()
 async def set_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set welcome message"""
     if not context.args:
         await update.message.reply_text(
-            "❌ Provide welcome message.\n\n"
+            "❌ Provide welcome message.\n"
             "Variables: {chat_title}, {user_name}, {user_mention}, {user_id}, {username}"
         )
         return
     
     chat = update.effective_chat
-    welcome_text = update.message.text_html.split(None, 1)[1] if len(context.args) > 0 else ""
-    
-    if not welcome_text:
-        await update.message.reply_text(
-            "❌ Provide welcome message.\n\n"
-            "Variables: {chat_title}, {user_name}, {user_mention}, {user_id}, {username}"
-        )
-        return
+    welcome_text = update.message.text_html.split(None, 1)[1]
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
             {"$set": {
-                "id": chat.id,
-                "title": chat.title,
                 "welcome_message": welcome_text,
                 "welcome_enabled": True
             }},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         await update.message.reply_text(
             "✅ Welcome message set!\n"
             "Tip: Use /welcomepreview to test it."
         )
-    except PyMongoError as e:
-        logger.error(f"Set welcome failed: {e}")
+    except Exception as e:
+        logger.error(f"Set welcome failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
 async def toggle_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Toggle welcome messages"""
-    chat = update.effective_chat
-    
     if not context.args:
         await update.message.reply_text("❌ Usage: /welcome on/off")
         return
     
+    chat = update.effective_chat
     status = context.args[0].lower() == "on"
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
-            {"$set": {
-                "id": chat.id,
-                "title": chat.title,
-                "welcome_enabled": status
-            }},
+            {"$set": {"welcome_enabled": status}},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         status_emoji = "✅ On" if status else "❌ Off"
         await update.message.reply_text(f"🎉 Welcome messages: {status_emoji}")
-    except PyMongoError as e:
-        logger.error(f"Toggle welcome failed: {e}")
+    except Exception as e:
+        logger.error(f"Toggle welcome failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
@@ -2641,79 +2129,64 @@ async def set_goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set goodbye message"""
     if not context.args:
         await update.message.reply_text(
-            "❌ Provide goodbye message.\n\n"
-            "Variables: {user_name}, {user_mention}"
+            "❌ Provide goodbye message.\nVariables: {user_name}, {user_mention}"
         )
         return
     
     chat = update.effective_chat
-    goodbye_text = update.message.text_html.split(None, 1)[1] if len(context.args) > 0 else ""
-    
-    if not goodbye_text:
-        await update.message.reply_text(
-            "❌ Provide goodbye message.\n\n"
-            "Variables: {user_name}, {user_mention}"
-        )
-        return
+    goodbye_text = update.message.text_html.split(None, 1)[1]
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
             {"$set": {
-                "id": chat.id,
-                "title": chat.title,
                 "goodbye_message": goodbye_text,
                 "goodbye_enabled": True
             }},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         await update.message.reply_text("✅ Goodbye message set!")
-    except PyMongoError as e:
-        logger.error(f"Set goodbye failed: {e}")
+    except Exception as e:
+        logger.error(f"Set goodbye failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
 async def toggle_goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Toggle goodbye messages"""
-    chat = update.effective_chat
-    
     if not context.args:
         await update.message.reply_text("❌ Usage: /goodbye on/off")
         return
     
+    chat = update.effective_chat
     status = context.args[0].lower() == "on"
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
-            {"$set": {
-                "id": chat.id,
-                "title": chat.title,
-                "goodbye_enabled": status
-            }},
+            {"$set": {"goodbye_enabled": status}},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         status_emoji = "✅ On" if status else "❌ Off"
         await update.message.reply_text(f"👋 Goodbye messages: {status_emoji}")
-    except PyMongoError as e:
-        logger.error(f"Toggle goodbye failed: {e}")
+    except Exception as e:
+        logger.error(f"Toggle goodbye failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
 async def preview_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Preview welcome message"""
     chat = update.effective_chat
-    group = await get_cached_group(chat.id)
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
     
-    if not group or not group.get("welcome_message"):
+    if not group_data.get("welcome_message"):
         await update.message.reply_text("❌ No welcome message set.")
         return
     
     user = update.effective_user
-    template = group["welcome_message"]
+    template = group_data["welcome_message"]
     
     preview_text = template.format(
         chat_title=escape_html(chat.title),
@@ -2725,44 +2198,241 @@ async def preview_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(preview_text, parse_mode=ParseMode.HTML)
 
-# === GROUP SETTINGS ===
+# =============================================================================
+# NOTES & FILTERS
+# =============================================================================
+
+@admin_only()
+async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save a note"""
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usage: /note <name> <content>")
+        return
+    
+    note_name = context.args[0].lower()
+    note_content = update.message.text_html.split(None, 2)[2]
+    
+    chat = update.effective_chat
+    
+    try:
+        await mongo.db.groups.update_one(
+            {"id": chat.id},
+            {"$set": {f"notes.{note_name}": note_content}},
+            upsert=True
+        )
+        await group_cache.delete(f"group_{chat.id}")
+        await update.message.reply_text(
+            f"📝 <b>NOTE SAVED</b> 📝\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🔑 <b>Keyword:</b> {note_name}\n"
+            f"📝 <i>Use '/get {note_name}' to see it.</i>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Save note failed: {e}", exc_info=True)
+        await update.message.reply_text("❌ Database error.")
+
+async def get_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get a note"""
+    if not context.args:
+        await update.message.reply_text("❌ Usage: /get <note_name>")
+        return
+    
+    note_name = context.args[0].lower()
+    chat = update.effective_chat
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    
+    if "notes" in group_data and note_name in group_data["notes"]:
+        await update.message.reply_text(group_data["notes"][note_name])
+    else:
+        await update.message.reply_text("❌ Note not found.")
+
+@admin_only()
+async def del_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete a note"""
+    if not context.args:
+        await update.message.reply_text("❌ Usage: /delnote <name>")
+        return
+    
+    note_name = context.args[0].lower()
+    chat = update.effective_chat
+    
+    try:
+        result = await mongo.db.groups.update_one(
+            {"id": chat.id},
+            {"$unset": {f"notes.{note_name}": ""}}
+        )
+        
+        if result.modified_count > 0:
+            await group_cache.delete(f"group_{chat.id}")
+            await update.message.reply_text(
+                f"🗑️ <b>NOTE DELETED</b> 🗑️\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🔑 <b>Keyword:</b> {note_name}",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await update.message.reply_text("❌ Note not found.")
+    except Exception as e:
+        logger.error(f"Delete note failed: {e}", exc_info=True)
+        await update.message.reply_text("❌ Database error.")
+
+@admin_only()
+async def add_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add a filter"""
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usage: /filter <keyword> <response>")
+        return
+    
+    keyword = context.args[0].lower()
+    response = update.message.text_html.split(None, 2)[2]
+    chat = update.effective_chat
+    
+    try:
+        await mongo.db.groups.update_one(
+            {"id": chat.id},
+            {"$set": {f"filters.{keyword}": response}},
+            upsert=True
+        )
+        await group_cache.delete(f"group_{chat.id}")
+        await update.message.reply_text(
+            f"🛡️ <b>FILTER ADDED</b> 🛡️\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🔑 <b>Keyword:</b> {keyword}",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Add filter failed: {e}", exc_info=True)
+        await update.message.reply_text("❌ Database error.")
+
+@admin_only()
+async def stop_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Stop a filter"""
+    if not context.args:
+        await update.message.reply_text("❌ Usage: /stop <keyword>")
+        return
+    
+    keyword = context.args[0].lower()
+    chat = update.effective_chat
+    
+    try:
+        result = await mongo.db.groups.update_one(
+            {"id": chat.id},
+            {"$unset": {f"filters.{keyword}": ""}}
+        )
+        
+        if result.modified_count > 0:
+            await group_cache.delete(f"group_{chat.id}")
+            await update.message.reply_text(
+                f"🗑️ <b>FILTER REMOVED</b> 🗑️\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🔑 <b>Keyword:</b> {keyword}",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await update.message.reply_text("❌ Filter not found.")
+    except Exception as e:
+        logger.error(f"Stop filter failed: {e}", exc_info=True)
+        await update.message.reply_text("❌ Database error.")
+
+async def check_notes_and_filters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Auto-reply to filters"""
+    if not update.message or not update.message.text:
+        return
+    
+    text = update.message.text
+    if text.startswith("/"):
+        return
+    
+    chat = update.effective_chat
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    
+    if "filters" in group_data:
+        for keyword, response in group_data["filters"].items():
+            if keyword.lower() in text.lower():
+                await update.message.reply_text(response)
+                return
+
+# =============================================================================
+# RULES
+# =============================================================================
+
+@admin_only()
+async def set_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set group rules"""
+    if not context.args:
+        await update.message.reply_text("❌ Provide rules text.")
+        return
+    
+    chat = update.effective_chat
+    rules_text = update.message.text_html.split(None, 1)[1]
+    
+    try:
+        await mongo.db.groups.update_one(
+            {"id": chat.id},
+            {"$set": {"rules": rules_text}},
+            upsert=True
+        )
+        await group_cache.delete(f"group_{chat.id}")
+        await update.message.reply_text("✅ Rules updated.")
+    except Exception as e:
+        logger.error(f"Set rules failed: {e}", exc_info=True)
+        await update.message.reply_text("❌ Database error.")
+
+async def show_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show group rules"""
+    chat = update.effective_chat
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
+    
+    if rules := group_data.get("rules"):
+        await update.message.reply_text(
+            f"📜 <b>Group Rules</b>\n\n{escape_html(rules)}",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await update.message.reply_text("❌ No rules set for this group.")
+
+# =============================================================================
+# GROUP SETTINGS
+# =============================================================================
+
 @admin_only()
 async def settings_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show settings panel"""
+    """Updated settings panel with @admin toggle"""
     chat = update.effective_chat
-    group = await get_cached_group(chat.id)
+    group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
     
-    settings_text = f"""
-⚙️ <b>Settings for {escape_html(chat.title)}</b>
-
-🛡️ <b>Anti-Flood:</b> {'✅ On' if group.get('antiflood_enabled', False) else '❌ Off'}
-   Limit: {group.get('antiflood_limit', config.FLOOD_LIMIT)} msgs / {group.get('antiflood_time', config.FLOOD_TIME)}s
-
-🤖 <b>Auto-Mod:</b> {'✅ On' if group.get('automod_enabled', False) else '❌ Off'}
-   Anti-Link: {'✅' if group.get('anti_link_enabled', False) else '❌'}
-   Anti-Swear: {'✅' if group.get('anti_swear_enabled', False) else '❌'}
-
-🔐 <b>CAPTCHA:</b> {'✅ On' if group.get('captcha_enabled', False) else '❌ Off'}
-   Timeout: {group.get('captcha_timeout', config.CAPTCHA_TIMEOUT)}s
-
-🎉 <b>Welcome:</b> {'✅ On' if group.get('welcome_enabled', False) else '❌ Off'}
-👋 <b>Goodbye:</b> {'✅ On' if group.get('goodbye_enabled', False) else '❌ Off'}
-
-⚠️ <b>Max Warnings:</b> {group.get('max_warnings', config.MAX_WARNINGS)}
-"""
+    settings_text = (
+        f"⚙️ <b>Settings for {escape_html(chat.title)}</b>\n\n"
+        f"🚨 <b>Admin Tagging:</b> {'✅ On' if group_data.get('admin_tag_enabled', True) else '❌ Off'}\n\n"
+        f"🛡️ <b>Anti-Flood:</b> {'✅ On' if group_data.get('antiflood_enabled', False) else '❌ Off'}\n"
+        f"   Limit: {group_data.get('antiflood_limit', config.flood_limit)} msgs / "
+        f"{group_data.get('antiflood_time', config.flood_time)}s\n\n"
+        f"🤖 <b>Auto-Mod:</b> {'✅ On' if group_data.get('automod_enabled', False) else '❌ Off'}\n"
+        f"   Anti-Link: {'✅' if group_data.get('anti_link_enabled', False) else '❌'}\n"
+        f"   Anti-Swear: {'✅' if group_data.get('anti_swear_enabled', False) else '❌'}\n\n"
+        f"🔐 <b>CAPTCHA:</b> {'✅ On' if group_data.get('captcha_enabled', False) else '❌ Off'}\n"
+        f"   Timeout: {group_data.get('captcha_timeout', config.captcha_timeout)}s\n\n"
+        f"🎉 <b>Welcome:</b> {'✅ On' if group_data.get('welcome_enabled', False) else '❌ Off'}\n"
+        f"👋 <b>Goodbye:</b> {'✅ On' if group_data.get('goodbye_enabled', False) else '❌ Off'}\n\n"
+        f"⚠️ <b>Max Warnings:</b> {group_data.get('max_warnings', config.max_warnings)}"
+    )
     
     buttons = [
         [
+            InlineKeyboardButton("🚨 Admin Tag", callback_data="toggle_admin_tag"),
+        ],
+        [
             InlineKeyboardButton("Anti-Flood", callback_data="toggle_antiflood"),
-            InlineKeyboardButton("Auto-Mod", callback_data="toggle_automod")
+            InlineKeyboardButton("Auto-Mod", callback_data="toggle_automod"),
         ],
         [
             InlineKeyboardButton("CAPTCHA", callback_data="toggle_captcha"),
-            InlineKeyboardButton("Anti-Link", callback_data="toggle_antilink")
+            InlineKeyboardButton("Anti-Link", callback_data="toggle_antilink"),
         ],
         [
             InlineKeyboardButton("Welcome", callback_data="toggle_welcome"),
-            InlineKeyboardButton("Goodbye", callback_data="toggle_goodbye")
+            InlineKeyboardButton("Goodbye", callback_data="toggle_goodbye"),
         ],
         [InlineKeyboardButton("Close", callback_data="close_settings")]
     ]
@@ -2775,75 +2445,70 @@ async def settings_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only()
 async def set_max_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set max warnings before ban"""
+    """Set max warnings"""
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_text("❌ Usage: /setmaxwarn <number> (2-10)")
         return
     
     max_warn = int(context.args[0])
     if not 2 <= max_warn <= 10:
-        await update.message.reply_text("❌ Must be between 2-10 warnings.")
+        await update.message.reply_text("❌ Must be between 2-10.")
         return
     
     chat = update.effective_chat
     
     try:
-        mongo.groups.update_one(
+        await mongo.db.groups.update_one(
             {"id": chat.id},
-            {"$set": {
-                "id": chat.id,
-                "title": chat.title,
-                "max_warnings": max_warn
-            }},
+            {"$set": {"max_warnings": max_warn}},
             upsert=True
         )
-        invalidate_group_cache(chat.id)
+        await group_cache.delete(f"group_{chat.id}")
         
         await update.message.reply_text(
             f"✅ Max warnings set to {max_warn}.\n"
-            f"Users will be banned after {max_warn} active warnings."
+            f"Users will be muted after {max_warn} warnings."
         )
-    except PyMongoError as e:
-        logger.error(f"Set max warnings failed: {e}")
+    except Exception as e:
+        logger.error(f"Set max warnings failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Database error.")
 
 @admin_only()
 async def group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show group information"""
+    """Show group info"""
     chat = update.effective_chat
     
     try:
         member_count = await context.bot.get_chat_member_count(chat.id)
-        
         bot_info = await context.bot.get_me()
         bot_member = await chat.get_member(bot_info.id)
         
-        group_warnings = mongo.warnings.count_documents({
+        group_warnings = await mongo.db.warnings.count_documents({
             "group_id": chat.id,
             "active": True
         })
         
-        info_text = f"""
-📊 <b>Group Information</b>
-
-🏷️ <b>Name:</b> {escape_html(chat.title)}
-🆔 <b>ID:</b> <code>{chat.id}</code>
-👥 <b>Members:</b> {member_count}
-
-🤖 <b>Bot Status:</b>
-• Name: {bot_info.first_name}
-• Username: @{bot_info.username}
-• Permissions: {'✅ Admin' if bot_member.status == ChatMember.ADMINISTRATOR else '❌ Not Admin'}
-
-📊 <b>Statistics:</b>
-• Active Warnings: {group_warnings}
-"""
+        info_text = (
+            f"📊 <b>Group Information</b>\n\n"
+            f"🏷️ <b>Name:</b> {escape_html(chat.title)}\n"
+            f"🆔 <b>ID:</b> <code>{chat.id}</code>\n"
+            f"👥 <b>Members:</b> {member_count}\n\n"
+            f"🤖 <b>Bot Status:</b>\n"
+            f"• Name: {bot_info.first_name}\n"
+            f"• Username: @{bot_info.username}\n"
+            f"• Permissions: {'✅ Admin' if bot_member.status == ChatMember.ADMINISTRATOR else '❌ Not Admin'}\n\n"
+            f"📊 <b>Statistics:</b>\n"
+            f"• Active Warnings: {group_warnings}"
+        )
         await update.message.reply_text(info_text, parse_mode=ParseMode.HTML)
     except Exception as e:
-        logger.error(f"Group info failed: {e}")
+        logger.error(f"Group info failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Failed to get group info.")
 
-# === UTILITY COMMANDS ===
+# =============================================================================
+# UTILITY COMMANDS
+# =============================================================================
+
 async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Get user and chat ID"""
     user = update.effective_user
@@ -2867,10 +2532,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         f"👋🏻 <b>Hello {escape_html(user.first_name)}!</b>\n\n"
-        f"🛡️ <b>{escape_html(bot_name)}</b> is the most complete Bot to help you manage your groups easily and safely!\n\n"
-        f"👉🏻 <b>Add me in a Supergroup</b> and promote me as Admin to let me get in action!\n\n"
+        f"🛡️ <b>{escape_html(bot_name)}</b> is a complete bot to help you manage your groups easily and safely!\n\n"
+        f"👉🏻 <b>Add me to a Supergroup</b> and promote me as Admin to let me get in action!\n\n"
         f"❓ <b>WHICH ARE THE COMMANDS?</b> ❓\n"
-        f"Press the <b>Help</b> button below or type /help to see all the commands and how they work!\n\n"
+        f"Press the <b>Help</b> button below or type /help to see all commands!\n\n"
         f"📃 <i>By using this bot, you agree to our Privacy Policy.</i>"
     )
     
@@ -2883,90 +2548,103 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("ℹ️ Bot Information", callback_data="lb_info"),
         ]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Help command"""
     user = update.effective_user
     chat = update.effective_chat
-    is_owner = user.id == config.ADMIN_ID
+    is_owner = user.id == config.admin_id
     is_admin_user = is_owner or (chat.type != "private" and await is_admin(chat, user.id))
     
     help_text = """
-🤖 <b>Group Manager Bot - Help</b>
+❖══════════════════════════❖
+ 🤖 <b>GROUP MANAGER BOT</b>
+  <b>HELP HALL</b>
+❖══════════════════════════❖
 
-<b>📖 General Commands:</b>
-/start - Start the bot
-/help - Show this help
-/rules - View group rules
-/id - Get user and chat ID
-/poll - Create a poll
-/quiz - Create a quiz
-/roll - Roll a dice
-/leaderboard - Top active members
-/stats - Group statistics
+✦━━━━━━━━━━━━━━━━━━━━✦
+📖 <b>GENERAL COMMANDS</b>
+✦━━━━━━━━━━━━━━━━━━━━✦
+◆ <code>/start</code> — Start the bot  
+◆ <code>/help</code> — Show help  
+◆ <code>/rules</code> — Group rules  
+◆ <code>/id</code> — User & Chat ID  
+◆ <code>/poll</code> — Create poll  
+◆ <code>/quiz</code> — Create quiz  
+◆ <code>/roll</code> — Roll dice  
+◆ <code>/leaderboard</code> — Active members  
+◆ <code>/stats</code> — Group statistics  
+
+✦━━━━━━━━━━━━━━━━━━━━✦
 """
+    
+    if is_admin_user:
+        help_text += """
+👑 <b>ADMIN CHAMBER</b>
 
-if is_admin_user:  
-    help_text += """
+⚔ <b>MODERATION</b>
+◆ <code>/ban &lt;user&gt; [reason]</code>  
+◆ <code>/unban &lt;user_id&gt;</code>  
+◆ <code>/mute &lt;user&gt; [duration]</code>  
+◆ <code>/unmute &lt;user&gt;</code>  
+◆ <code>/kick &lt;user&gt; [reason]</code>  
+◆ <code>/warn &lt;user&gt; [reason]</code>  
+◆ <code>/unwarn &lt;user&gt;</code>  
+◆ <code>/warnings &lt;user&gt;</code>  
+◆ <code>/purge [count]</code>  
+◆ <code>/promote &lt;user&gt;</code>  
+◆ <code>/demote &lt;user&gt;</code>  
 
-<b>👑 Admin Commands:</b>
+🛡 <b>SECURITY</b>
+◆ <code>/antiflood</code>  
+◆ <code>/setflood &lt;limit&gt; &lt;time&gt;</code>  
+◆ <code>/automod</code>  
+◆ <code>/antilink</code>  
+◆ <code>/antiswear</code>  
+◆ <code>/setbadwords &lt;words...&gt;</code>  
+◆ <code>/captcha</code>  
+◆ <code>/setcaptcha &lt;timeout&gt;</code>  
+◆ <code>/admintag</code> — Toggle @admin tagging  
 
-<b>🔨 Moderation:</b>
-/ban <user> [reason] - Ban user
-/unban <user_id> - Unban user
-/mute <user> [duration] - Mute user
-/unmute <user> - Unmute user
-/kick <user> [reason] - Kick user
-/warn <user> [reason] - Warn user
-/unwarn <user> - Remove warning
-/warnings <user> - View warnings
-/purge [count] - Delete messages
-/promote <user> - Make admin
-/demote <user> - Remove admin
+📜 <b>GROUP MANAGEMENT</b>
+◆ <code>/setrules &lt;text&gt;</code>  
+◆ <code>/setwelcome &lt;text&gt;</code>  
+◆ <code>/welcome on/off</code>  
+◆ <code>/setgoodbye &lt;text&gt;</code>  
+◆ <code>/goodbye on/off</code>  
+◆ <code>/note &lt;name&gt; &lt;text&gt;</code>  
+◆ <code>/get &lt;name&gt;</code>  
+◆ <code>/delnote &lt;name&gt;</code>  
+◆ <code>/filter &lt;kw&gt; &lt;response&gt;</code>  
+◆ <code>/stop &lt;kw&gt;</code>  
+◆ <code>/setmaxwarn &lt;n&gt;</code>  
+◆ <code>/settings</code>  
 
-<b>🛡️ Security:</b>
-/antiflood - Toggle anti-flood
-/setflood <limit> <time> - Configure flood
-/automod - Toggle auto-moderation
-/antilink - Toggle link blocking
-/antiswear - Toggle bad words
-/setbadwords <words...> - Set custom bad words
-/captcha - Toggle CAPTCHA
-/setcaptcha <timeout> - Configure CAPTCHA
-
-<b>📜 Management:</b>
-/setrules <text> - Set rules
-/setwelcome <text> - Set welcome message
-/welcome on/off - Toggle welcome
-/setgoodbye <text> - Set goodbye message
-/goodbye on/off - Toggle goodbye
-/note <name> <text> - Save note
-/get <name> - Get note
-/delnote <name> - Delete note
-/filter <kw> <response> - Add filter
-/stop <kw> - Remove filter
-/setmaxwarn <n> - Set max warnings
-/settings - View settings
+✦━━━━━━━━━━━━━━━━━━━━✦
 """
+    
+    if is_owner:
+        help_text += """
+👑 <b>OWNER THRONE</b>
+◆ <code>/broadcast &lt;message&gt;</code>  
+◆ <code>/leave &lt;group_id&gt;</code>  
+◆ <code>/logs</code>  
+◆ <code>/resetgroup</code>  
+◆ <code>/shutdown</code>  
+◆ <code>/ping</code>  
 
-if is_owner:  
-    help_text += """
-
-<b>👑 Owner Commands:</b>
-/broadcast <message> - Broadcast to all groups
-/leave <group_id> - Leave group
-/logs - View bot logs
-/resetgroup - Reset current group
-/shutdown - Stop bot gracefully
-/ping - Check latency
+❖══════════════════════════❖
+✨ <b>Secure • Scalable • Production-Ready</b>
 """
     
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
-# === POLLS & QUIZZES ===
+# =============================================================================
+# POLLS & QUIZZES
+# =============================================================================
+
 @admin_only()
 async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Create a poll"""
@@ -2984,7 +2662,7 @@ async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
         question = context.args[0]
         options = context.args[1:]
     
-    if len(options) < 2 or len(options) > 10:
+    if not 2 <= len(options) <= 10:
         await update.message.reply_text("❌ Poll needs 2-10 options.")
         return
     
@@ -2997,8 +2675,8 @@ async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
             allows_multiple_answers=False
         )
     except Exception as e:
-        logger.error(f"Poll failed: {e}")
-        await update.message.reply_text(f"❌ Failed to create poll: {e}")
+        logger.error(f"Poll failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to create poll: {str(e)}")
 
 @admin_only()
 async def create_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3011,15 +2689,15 @@ async def create_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     match = re.match(r'["\'](.+?)["\']\s+(\d+)\s+(.+)', full_text)
     
     if not match:
-        await update.message.reply_text("❌ Invalid format. Use: /quiz \"Question\" 1 option1 option2")
+        await update.message.reply_text("❌ Invalid format.")
         return
     
     question = match.group(1)
     correct_index = int(match.group(2)) - 1
     options = [opt.strip() for opt in match.group(3).split(' ') if opt.strip()]
     
-    if correct_index < 0 or correct_index >= len(options):
-        await update.message.reply_text("❌ Correct answer index is out of range.")
+    if not 0 <= correct_index < len(options):
+        await update.message.reply_text("❌ Correct answer index out of range.")
         return
     
     try:
@@ -3032,10 +2710,13 @@ async def create_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
             correct_option_id=correct_index
         )
     except Exception as e:
-        logger.error(f"Quiz failed: {e}")
-        await update.message.reply_text(f"❌ Failed to create quiz: {e}")
+        logger.error(f"Quiz failed: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to create quiz: {str(e)}")
 
-# === STATS & LEADERBOARD ===
+# =============================================================================
+# STATS & LEADERBOARD
+# =============================================================================
+
 @admin_only()
 async def group_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show group statistics"""
@@ -3044,13 +2725,13 @@ async def group_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         member_count = await context.bot.get_chat_member_count(chat.id)
         
-        active_warnings = mongo.warnings.count_documents({
+        active_warnings = await mongo.db.warnings.count_documents({
             "group_id": chat.id,
             "active": True
         })
         
         week_ago = datetime.utcnow() - timedelta(days=7)
-        recent_actions = mongo.logs.count_documents({
+        recent_actions = await mongo.db.logs.count_documents({
             "group_id": chat.id,
             "timestamp": {"$gte": week_ago}
         })
@@ -3058,10 +2739,10 @@ async def group_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pipeline = [
             {"$match": {"group_id": chat.id, "active": True}},
             {"$group": {"_id": "$user_id", "count": {"$sum": 1}}},
-            {"$sort": {"count": DESCENDING}},
+            {"$sort": {"count": -1}},
             {"$limit": 5}
         ]
-        top_offenders = list(mongo.warnings.aggregate(pipeline))
+        top_offenders = await mongo.db.warnings.aggregate(pipeline).to_list(None)
         
         stats_text = (
             f"📊 <b>GROUP STATISTICS</b> 📊\n"
@@ -3087,7 +2768,7 @@ async def group_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
     except Exception as e:
-        logger.error(f"Group stats failed: {e}")
+        logger.error(f"Group stats failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Failed to get statistics.")
 
 @admin_only()
@@ -3100,9 +2781,9 @@ async def export_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"$match": {"group_id": chat.id, "active": True}},
             {"$group": {"_id": "$user_id", "warnings": {"$sum": 1}}}
         ]
-        users_with_warns = {
-            doc["_id"]: doc["warnings"] for doc in mongo.warnings.aggregate(pipeline)
-        }
+        users_with_warns = {}
+        async for doc in mongo.db.warnings.aggregate(pipeline):
+            users_with_warns[doc["_id"]] = doc["warnings"]
         
         output = BytesIO()
         writer = csv.writer(output)
@@ -3131,69 +2812,53 @@ async def export_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=f"📊 Statistics for {chat.title}"
         )
     except Exception as e:
-        logger.error(f"Export stats failed: {e}")
+        logger.error(f"Export stats failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Failed to export statistics.")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show top active members with time selection"""
-    await send_leaderboard(update.effective_chat, update.effective_message, "lifetime")
+    """Show top active members"""
+    await _send_leaderboard(update.effective_chat, update.effective_message, "lifetime", edit=False)
 
-async def message_logger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Log user messages for leaderboard"""
-    user = update.effective_user
-    chat = update.effective_chat
-    
-    if not user or not chat or user.is_bot:
-        return
-        
-    try:
-        # Update user activity in database
-        mongo.logs.insert_one({
-            "group_id": chat.id,
-            "user_id": user.id,
-            "action": "message",
-            "timestamp": datetime.utcnow()
-        })
-        
-        # Also ensure user is in users collection
-        mongo.users.update_one(
-            {"id": user.id},
-            {"$set": {
-                "username": user.username.lower() if user.username else None,
-                "first_name": user.first_name,
-                "last_name": user.last_name,
-                "last_seen": datetime.utcnow()
-            }},
-            upsert=True
-        )
-    except Exception as e:
-        logger.error(f"Error in message_logger: {e}")
-
-async def send_leaderboard(chat: Chat, message: Message, timeframe: str, edit: bool = False):
-    """Internal helper to generate and send leaderboard"""
+async def _send_leaderboard(chat: Chat, message: Message, timeframe: str, edit: bool = False):
+    """Enhanced leaderboard with total message counts"""
     now = datetime.utcnow()
+    
     if timeframe == "today":
         start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
         title = "Today"
+        emoji = "🌅"
     elif timeframe == "weekly":
         start_date = now - timedelta(days=7)
         title = "This Week"
-    else:
+        emoji = "📅"
+    else:  # lifetime
         start_date = datetime.min
         title = "Lifetime"
-
+        emoji = "♾️"
+    
+    total_count = await mongo.db.logs.count_documents({
+        "group_id": chat.id,
+        "action": "message",
+        "timestamp": {"$gte": start_date}
+    })
+    
     pipeline = [
-        {"$match": {"group_id": chat.id, "action": "message", "timestamp": {"$gte": start_date}}},
+        {"$match": {
+            "group_id": chat.id,
+            "action": "message",
+            "timestamp": {"$gte": start_date}
+        }},
         {"$group": {"_id": "$user_id", "count": {"$sum": 1}}},
-        {"$sort": {"count": DESCENDING}},
+        {"$sort": {"count": -1}},
         {"$limit": 10}
     ]
-    top_users = list(mongo.logs.aggregate(pipeline))
+    top_users = await mongo.db.logs.aggregate(pipeline).to_list(None)
     
     board_text = (
         f"🏆 <b>TOP ACTIVE MEMBERS</b> 🏆\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📅 <b>Period:</b> {title}\n\n"
+        f"{emoji} <b>Period:</b> {title}\n"
+        f"📊 <b>Total Messages:</b> {total_count:,}\n\n"
     )
     
     if not top_users:
@@ -3202,9 +2867,10 @@ async def send_leaderboard(chat: Chat, message: Message, timeframe: str, edit: b
         for i, user_data in enumerate(top_users, 1):
             user_id = user_data["_id"]
             count = user_data["count"]
+            percentage = (count / total_count * 100) if total_count > 0 else 0
+            
             try:
-                # Try to get from database first to be faster
-                u_data = mongo.users.find_one({"id": user_id})
+                u_data = await mongo.db.users.find_one({"id": user_id})
                 if u_data:
                     name = escape_html(u_data.get("first_name", "User"))
                 else:
@@ -3214,48 +2880,81 @@ async def send_leaderboard(chat: Chat, message: Message, timeframe: str, edit: b
                 name = f"User({user_id})"
             
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"<code>{i}.</code>")
-            board_text += f"{medal} {name} — <b>{count}</b>\n"
+            board_text += f"{medal} {name} — <b>{count:,}</b> ({percentage:.1f}%)\n"
     
     board_text += "\n━━━━━━━━━━━━━━━━━━"
     
     keyboard = [
         [
-            InlineKeyboardButton("🕒 Today", callback_data="lb_today"),
+            InlineKeyboardButton("🌅 Today", callback_data="lb_today"),
             InlineKeyboardButton("📅 Weekly", callback_data="lb_weekly"),
             InlineKeyboardButton("♾️ Lifetime", callback_data="lb_lifetime")
         ],
         [InlineKeyboardButton("🗑️ Close", callback_data="close_settings")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
+    
     try:
         if edit:
-            await message.edit_text(board_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+            await message.edit_text(board_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
         else:
-            await message.reply_text(board_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+            await message.reply_text(board_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
     except Exception as e:
-        logger.error(f"Error sending leaderboard: {e}")
+        logger.error(f"Error sending leaderboard: {e}", exc_info=True)
+
+async def message_logger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Log messages for leaderboard"""
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    if not user or not chat or user.is_bot:
+        return
+    
+    try:
+        await asyncio.gather(
+            mongo.db.logs.insert_one({
+                "group_id": chat.id,
+                "user_id": user.id,
+                "action": "message",
+                "timestamp": datetime.utcnow()
+            }),
+            mongo.db.users.update_one(
+                {"id": user.id},
+                {"$set": {
+                    "username": user.username.lower() if user.username else None,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "last_seen": datetime.utcnow()
+                }},
+                upsert=True
+            )
+        )
+    except Exception as e:
+        logger.error(f"Error in message_logger: {e}", exc_info=True)
 
 async def roll_dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Roll a dice"""
+    """Roll dice"""
     sides = 6
     if context.args:
         try:
             sides = int(context.args[0])
-            if sides < 2 or sides > 100:
+            if not 2 <= sides <= 100:
                 await update.message.reply_text("❌ Dice must have 2-100 sides.")
                 return
         except ValueError:
-            pass
+            await update.message.reply_text("❌ Invalid number.")
+            return
     
     dice_msg = await update.message.reply_dice(emoji="🎲")
-    await asyncio.sleep(3)
+    await asyncio.sleep(4)
     result = random.randint(1, sides)
     await update.message.reply_text(f"🎲 Rolled: {result} (1-{sides})!")
 
-# === CALLBACK QUERY HANDLER ===
+# =============================================================================
+# CALLBACK HANDLERS
+# =============================================================================
+
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle all callback queries"""
+    """Enhanced callback dispatcher"""
     query = update.callback_query
     data = query.data
     
@@ -3265,30 +2964,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except:
             pass
         return
-
+    
     if data.startswith("lb_"):
         timeframe = data.replace("lb_", "")
-        if timeframe == "today":
-            await send_leaderboard(query.message.chat, query.message, "today", edit=True)
-        elif timeframe == "weekly":
-            await send_leaderboard(query.message.chat, query.message, "weekly", edit=True)
-        elif timeframe == "lifetime":
-            await send_leaderboard(query.message.chat, query.message, "lifetime", edit=True)
-        elif timeframe == "help":
-            await help_command(Update(update.update_id, message=query.message), context)
-        elif timeframe == "info":
-            # Bot info button logic
-            bot_info = context.bot
-            text = (
-                f"ℹ️ <b>BOT INFORMATION</b>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"🤖 <b>Name:</b> {escape_html(bot_info.first_name)}\n"
-                f"🆔 <b>Username:</b> @{bot_info.username}\n"
-                f"🏢 <b>Platform:</b> Telegram\n"
-                f"🛠️ <b>Version:</b> 1.0.0\n"
-                f"━━━━━━━━━━━━━━━━━━"
-            )
-            await query.message.reply_text(text, parse_mode=ParseMode.HTML)
+        await _send_leaderboard(query.message.chat, query.message, timeframe, edit=True)
         return
     
     if data.startswith("toggle_"):
@@ -3299,7 +2978,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer("❌ Admin only!", show_alert=True)
             return
         
-        group = await get_cached_group(chat.id)
+        group_data = await mongo.db.groups.find_one({"id": chat.id}) or {}
         
         setting_map = {
             "antiflood": "antiflood_enabled",
@@ -3307,33 +2986,69 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             "captcha": "captcha_enabled",
             "antilink": "anti_link_enabled",
             "welcome": "welcome_enabled",
-            "goodbye": "goodbye_enabled"
+            "goodbye": "goodbye_enabled",
+            "admin_tag": "admin_tag_enabled"
         }
         
         if setting in setting_map:
             db_field = setting_map[setting]
-            new_status = not group.get(db_field, False)
+            new_status = not group_data.get(db_field, False if setting != "admin_tag" else True)
             
             try:
-                mongo.groups.update_one(
+                await mongo.db.groups.update_one(
                     {"id": chat.id},
                     {"$set": {db_field: new_status}},
                     upsert=True
                 )
-                invalidate_group_cache(chat.id)
+                await group_cache.delete(f"group_{chat.id}")
                 
                 await query.answer(f"✅ {'Enabled' if new_status else 'Disabled'}", show_alert=False)
-                await settings_panel(
-                    Update(update.update_id, message=query.message),
-                    context
-                )
-            except PyMongoError as e:
-                logger.error(f"Callback toggle failed: {e}")
+                
+                if setting in ["admin_tag", "antiflood", "automod", "captcha", "antilink", "welcome", "goodbye"]:
+                    await settings_panel(
+                        Update(update.update_id, message=query.message),
+                        context
+                    )
+            except Exception as e:
+                logger.error(f"Callback toggle failed: {e}", exc_info=True)
                 await query.answer("❌ Database error.", show_alert=True)
     
     await query.answer()
 
-# === ERROR HANDLER ===
+# =============================================================================
+# PERIODIC CLEANUP
+# =============================================================================
+
+async def periodic_cleanup(context: ContextTypes.DEFAULT_TYPE):
+    """Periodic cleanup of flood tracker and admin tag cache"""
+    async with _flood_lock:
+        now = time.time()
+        cutoff = config.flood_time * 2
+        keys_to_delete = []
+        
+        for key, timestamps in _flood_tracker.items():
+            valid_timestamps = [t for t in timestamps if now - t < cutoff]
+            if valid_timestamps:
+                _flood_tracker[key] = valid_timestamps
+            else:
+                keys_to_delete.append(key)
+        
+        for key in keys_to_delete:
+            _flood_tracker.pop(key, None)
+    
+    # Clean admin tag cache (keep only entries from last 24 hours)
+    async with ADMIN_TAG_LOCK:
+        now = time.time()
+        expired_users = [uid for uid, ts in ADMIN_TAG_CACHE.items() if now - ts > 86400]
+        for uid in expired_users:
+            ADMIN_TAG_CACHE.pop(uid, None)
+    
+    logger.info(f"Cleanup complete. Tracked floods: {len(_flood_tracker)}, Admin tags: {len(ADMIN_TAG_CACHE)}")
+
+# =============================================================================
+# ERROR HANDLER
+# =============================================================================
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler"""
     logger.error(f"Update {update} caused error {context.error}", exc_info=context.error)
@@ -3347,34 +3062,12 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
 
-# === MAIN APPLICATION ===
-application: Application = None
+# =============================================================================
+# MAIN APPLICATION
+# =============================================================================
 
-@asynccontextmanager
-async def lifespan(_app: Application):
-    """Application lifespan manager"""
-    logger.info("Bot starting up...")
-    
-    is_valid, errors = config.validate()
-    if not is_valid:
-        logger.critical(f"Configuration errors: {errors}")
-        sys.exit(1)
-    
-    config.log_config(logger)
-    
-    try:
-        mongo.bot_stats.update_one(
-            {"date": datetime.utcnow().date().isoformat()},
-            {"$inc": {"starts": 1}},
-            upsert=True
-        )
-        logger.info("Bot stats updated")
-    except PyMongoError as e:
-        logger.error(f"Failed to update bot stats: {e}")
-    
-    yield
-    
-    logger.info("Bot shutting down...")
+START_TIME = time.time()
+application: Application = None
 
 def setup_application() -> Application:
     """Setup and configure the application"""
@@ -3382,17 +3075,20 @@ def setup_application() -> Application:
     
     application = (
         ApplicationBuilder()
-        .token(config.TOKEN)
+        .token(config.bot_token)
         .concurrent_updates(True)
         .connection_pool_size(8)
         .rate_limiter(None)
+        .post_init(post_init)
+        .post_shutdown(post_stop)
         .build()
     )
     
     # Message logging
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, message_logger), group=-1)
-    
-    # === COMMAND HANDLERS ===
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, 
+        message_logger
+    ), group=-1)
     
     # Owner commands
     application.add_handler(CommandHandler("broadcast", broadcast_command, filters=filters.ChatType.PRIVATE))
@@ -3403,7 +3099,7 @@ def setup_application() -> Application:
     application.add_handler(CommandHandler("shutdown", shutdown_bot, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("ping", ping_bot))
     
-    # Admin commands - moderation
+    # Admin moderation
     application.add_handler(CommandHandler("ban", ban_user, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("unban", unban_user, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("mute", mute_user, filters=filters.ChatType.GROUPS))
@@ -3416,7 +3112,7 @@ def setup_application() -> Application:
     application.add_handler(CommandHandler("promote", promote_user, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("demote", demote_user, filters=filters.ChatType.GROUPS))
     
-    # Admin commands - security
+    # Admin security
     application.add_handler(CommandHandler("antiflood", toggle_antiflood, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("setflood", configure_antiflood, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("automod", toggle_automod, filters=filters.ChatType.GROUPS))
@@ -3425,8 +3121,9 @@ def setup_application() -> Application:
     application.add_handler(CommandHandler("setbadwords", set_bad_words, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("captcha", toggle_captcha, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("setcaptcha", configure_captcha, filters=filters.ChatType.GROUPS))
+    application.add_handler(CommandHandler("admintag", toggle_admin_tag, filters=filters.ChatType.GROUPS))
     
-    # Admin commands - management
+    # Admin management
     application.add_handler(CommandHandler("setrules", set_rules, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("setwelcome", set_welcome, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("welcome", toggle_welcome, filters=filters.ChatType.GROUPS))
@@ -3460,9 +3157,13 @@ def setup_application() -> Application:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_notes_and_filters), group=1)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, antiflood_check), group=2)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, scan_message), group=3)
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r'@admin\b') & filters.ChatType.GROUPS, 
+        handle_admin_tag
+    ), group=4)
     
-    # Callback query handlers
-    application.add_handler(CallbackQueryHandler(handle_captcha, pattern="^captcha_"))
+    # Callback handlers
+    application.add_handler(CallbackQueryHandler(handle_captcha_callback, pattern="^captcha_"))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     
     # Error handler
@@ -3470,57 +3171,63 @@ def setup_application() -> Application:
     
     return application
 
+async def post_init(app: Application) -> None:
+    """Post initialization"""
+    logger.info("="*50)
+    logger.info("🚀 BOT STARTING UP...")
+    logger.info("="*50)
+    logger.info(f"Admin ID: {config.admin_id}")
+    logger.info(f"Database: {config.database_name}")
+    logger.info(f"Max Warnings: {config.max_warnings}")
+    logger.info(f"Captcha Timeout: {config.captcha_timeout}s")
+    logger.info(f"Flood Limit: {config.flood_limit} msgs/{config.flood_time}s")
+    logger.info(f"Rate Limit: {config.rate_limit_calls} calls/{config.rate_limit_period}s")
+    logger.info(f"Debug Mode: {config.debug}")
+    logger.info("="*50)
+    
+    try:
+        await mongo.connect()
+    except Exception as e:
+        logger.critical(f"❌ Failed to connect to MongoDB: {e}")
+        sys.exit(1)
+    
+    app.job_queue.run_repeating(periodic_cleanup, interval=300, first=300)
+    
+    try:
+        await mongo.db.bot_stats.update_one(
+            {"date": datetime.utcnow().date().isoformat()},
+            {"$inc": {"starts": 1}},
+            upsert=True
+        )
+        logger.info("✅ Bot stats updated")
+    except Exception as e:
+        logger.error(f"Failed to update bot stats: {e}")
+    
+    logger.info("✅ Bot started successfully")
+
+async def post_stop(app: Application) -> None:
+    """Post shutdown"""
+    logger.info("💤 Bot shutting down...")
+    if mongo.client:
+        mongo.client.close()
+
 def main():
     """Main entry point"""
     global application
     
-    # Create application
     application = setup_application()
     
-    # ✅ FIX: Use post_init instead of lifespan attribute
-    async def post_init(app: Application) -> None:
-        """Called after application is initialized"""
-        logger.info("Bot starting up...")
-        
-        is_valid, errors = config.validate()
-        if not is_valid:
-            logger.critical(f"Configuration errors: {errors}")
-            sys.exit(1)
-        
-        config.log_config(logger)
-        
-        try:
-            mongo.bot_stats.update_one(
-                {"date": datetime.utcnow().date().isoformat()},
-                {"$inc": {"starts": 1}},
-                upsert=True
-            )
-            logger.info("Bot stats updated")
-        except PyMongoError as e:
-            logger.error(f"Failed to update bot stats: {e}")
-    
-    application.post_init = post_init
-    
-    # Optional: Add shutdown cleanup
-    async def post_stop(app: Application) -> None:
-        """Called after application stops"""
-        logger.info("Bot shutting down...")
-    
-    application.post_stop = post_stop
-    
-    logger.info("Bot starting...")
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        close_loop=True,
-        drop_pending_updates=False
-    )
-
-if __name__ == "__main__":
-    try :
-        main()
+    try:
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=True,
+            drop_pending_updates=False
+        )
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
-        logger.critical (f"Fatal error: {e}", exc_info=True)
+        logger.critical(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
 
+if __name__ == "__main__":
+    main()
