@@ -3288,10 +3288,12 @@ def setup_application() -> Application:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_notes_and_filters), group=1)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, antiflood_check), group=2)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, scan_message), group=3)
-    application.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r'@admin\b') & filters.ChatType.GROUPS, 
-        handle_admin_tag
-    ), group=4)
+    application.add_handler(
+    MessageHandler(
+        filters.Regex(r'@admin\b') & filters.ChatType.GROUPS,
+        handle_admin_mention
+    ),
+    group=10 )
 
     
     # group 0 → CAPTCHA (highest priority)
