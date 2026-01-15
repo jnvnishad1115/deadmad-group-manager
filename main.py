@@ -1525,6 +1525,66 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Demote failed: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Demote failed: {str(e)}")
 
+
+async def handle_all_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not message or not user or not chat:
+        return
+
+    # Admin only (HIGHLY recommended)
+    if not await is_admin(chat, user.id):
+        await message.reply_text("❌ Only admins can use @all.")
+        return
+
+    # Custom message
+    text = message.text or ""
+    custom_text = text.replace("@all", "", 1).strip()
+
+    # Fetch ALL known users from logs
+    pipeline = [
+        {"$match": {"group_id": chat.id, "action": "message"}},
+        {"$group": {"_id": "$user_id"}}
+    ]
+    users = await mongo.db.logs.aggregate(pipeline).to_list(None)
+
+    if not users:
+        await message.reply_text("❌ No users found to mention.")
+        return
+
+    mentions = []
+    for u in users:
+        try:
+            member = await chat.get_member(u["_id"])
+            if not member.user.is_bot:
+                mentions.append(get_user_mention(member.user))
+        except:
+            continue
+
+    if not mentions:
+        await message.reply_text("❌ No valid users to mention.")
+        return
+
+    header = "📢 <b>ATTENTION EVERYONE!</b>\n\n"
+    body = f"📝 {escape_html(custom_text)}\n\n" if custom_text else ""
+
+    # SAFE BATCH SENDING (VERY IMPORTANT)
+    batch_size = 5  # DO NOT increase beyond 5
+    for i in range(0, len(mentions), batch_size):
+        chunk = mentions[i:i + batch_size]
+        try:
+            await context.bot.send_message(
+                chat.id,
+                header + body + " ".join(chunk),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+            await asyncio.sleep(1.2)  # anti-flood
+        except Exception as e:
+            logger.warning(f"@all batch failed: {e}")
+
 # =============================================================================
 # SECURITY MODULES
 # =============================================================================
@@ -3260,6 +3320,13 @@ def setup_application() -> Application:
     application.add_handler(CommandHandler("captcha", toggle_captcha, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("setcaptcha", configure_captcha, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("admintag", toggle_admin_tag, filters=filters.ChatType.GROUPS))
+    application.add_handler(
+    MessageHandler(
+        filters.Regex(r"^@all\b") & filters.ChatType.GROUPS,
+        handle_all_mention
+    ),
+    group=5
+    )
     
     # Admin management
     application.add_handler(CommandHandler("setrules", set_rules, filters=filters.ChatType.GROUPS))
