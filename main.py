@@ -1595,56 +1595,49 @@ async def handle_admin_mention(update: Update, context: ContextTypes.DEFAULT_TYP
     if not message or not user or not chat:
         return
 
-    # Only groups
     if chat.type not in [Chat.GROUP, Chat.SUPERGROUP]:
         return
 
-    # Get all admins
-    admins = await get_group_admins(chat, context)
-    if not admins:
-        await message.reply_text("❌ No admins found.")
+    # 🔒 Check bot admin status FIRST
+    try:
+        bot_member = await chat.get_member(context.bot.id)
+        if bot_member.status != ChatMember.ADMINISTRATOR:
+            await message.reply_text("❌ I must be admin to tag admins.")
+            return
+    except:
+        await message.reply_text("❌ Failed to check bot permissions.")
+        return
+
+    # ✅ Fetch admins
+    try:
+        admins = await context.bot.get_chat_administrators(chat.id)
+    except Exception as e:
+        logger.error(f"Admin fetch failed: {e}")
+        await message.reply_text("❌ Cannot retrieve admin list.")
         return
 
     admin_mentions = [
-        get_user_mention(admin.user)
-        for admin in admins
-        if not admin.user.is_bot
+        get_user_mention(a.user)
+        for a in admins
+        if not a.user.is_bot
     ]
 
     if not admin_mentions:
-        await message.reply_text("❌ No human admins found.")
+        await message.reply_text("❌ No admins found (bot has no access).")
         return
 
-    # Build message
-    text = "🚨 <b>ADMIN ALERT</b>\n\n"
-    text += f"👤 <b>Requested by:</b> {get_user_mention(user)}\n"
+    text = (
+        "🚨 <b>ADMIN ALERT</b>\n\n"
+        f"👤 <b>Requested by:</b> {get_user_mention(user)}\n\n"
+        + " ".join(admin_mentions)
+    )
 
-    # If replied to someone
-    if message.reply_to_message and message.reply_to_message.from_user:
-        target = message.reply_to_message.from_user
-        text += (
-            f"🧍 <b>Regarding:</b> {get_user_mention(target)} "
-            f"(ID: <code>{target.id}</code>)\n"
-        )
-
-        if message.reply_to_message.text:
-            text += (
-                f"\n💬 <b>Message:</b>\n"
-                f"<code>{escape_html(message.reply_to_message.text[:300])}</code>\n"
-            )
-
-    text += "\n" + " ".join(admin_mentions)
-
-    try:
-        await context.bot.send_message(
-            chat.id,
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_to_message_id=message.message_id,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logger.error(f"@admin mention failed: {e}")
+    await context.bot.send_message(
+        chat.id,
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_to_message_id=message.message_id
+    )
         
 
 async def scan_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
