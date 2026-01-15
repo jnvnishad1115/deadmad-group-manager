@@ -1721,6 +1721,66 @@ async def configure_antiflood(update: Update, context: ContextTypes.DEFAULT_TYPE
 # AUTO-MODERATION
 # =============================================================================
 
+async def handle_admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not message or not user or not chat:
+        return
+
+    # Only groups
+    if chat.type not in [Chat.GROUP, Chat.SUPERGROUP]:
+        return
+
+    # Get all admins
+    admins = await get_group_admins(chat, context)
+    if not admins:
+        await message.reply_text("❌ No admins found.")
+        return
+
+    admin_mentions = [
+        get_user_mention(admin.user)
+        for admin in admins
+        if not admin.user.is_bot
+    ]
+
+    if not admin_mentions:
+        await message.reply_text("❌ No human admins found.")
+        return
+
+    # Build message
+    text = "🚨 <b>ADMIN ALERT</b>\n\n"
+    text += f"👤 <b>Requested by:</b> {get_user_mention(user)}\n"
+
+    # If replied to someone
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target = message.reply_to_message.from_user
+        text += (
+            f"🧍 <b>Regarding:</b> {get_user_mention(target)} "
+            f"(ID: <code>{target.id}</code>)\n"
+        )
+
+        if message.reply_to_message.text:
+            text += (
+                f"\n💬 <b>Message:</b>\n"
+                f"<code>{escape_html(message.reply_to_message.text[:300])}</code>\n"
+            )
+
+    text += "\n" + " ".join(admin_mentions)
+
+    try:
+        await context.bot.send_message(
+            chat.id,
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_to_message_id=message.message_id,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error(f"@admin mention failed: {e}")
+        
+
 async def scan_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Scan messages for violations"""
     message = update.effective_message
@@ -2832,7 +2892,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ◆ <code>/shutdown</code>  
 ◆ <code>/ping</code>  
 
-❖══════════════════════════❖
+❖═════════════════════════❖
 ✨ <b>Secure • Scalable • Production-Ready</b>
 """
     
@@ -3366,6 +3426,13 @@ def setup_application() -> Application:
         filters.TEXT & filters.Regex(r'@admin\b') & filters.ChatType.GROUPS, 
         handle_admin_tag
     ), group=4)
+
+    application.add_handler(
+    MessageHandler(
+        filters.Regex(r"@admin\b") & filters.ChatType.GROUPS,
+        handle_admin_mention
+    ),
+    group=6 )
     
     # group 0 → CAPTCHA (highest priority)
     application.add_handler(
