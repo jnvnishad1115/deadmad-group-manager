@@ -3245,7 +3245,6 @@ def setup_application() -> Application:
     application.add_handler(CommandHandler("setbadwords", set_bad_words, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("captcha", toggle_captcha, filters=filters.ChatType.GROUPS))
     application.add_handler(CommandHandler("setcaptcha", configure_captcha, filters=filters.ChatType.GROUPS))
-    application.add_handler(CommandHandler("admintag", toggle_admin_tag, filters=filters.ChatType.GROUPS))
     application.add_handler(
     MessageHandler(
         filters.Regex(r"^@all\b") & filters.ChatType.GROUPS,
