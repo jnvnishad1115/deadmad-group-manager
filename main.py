@@ -1335,29 +1335,43 @@ async def view_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @log_command("promote")
 async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Promote user to admin"""
+
+    chat = update.effective_chat
+    sender = update.effective_user
+
     target_user, error = await resolve_target_user(update, context)
     if error:
         await update.message.reply_text(error)
         return
-    
-    if not await bot_can_promote_members(update.effective_chat, context):
+
+    # 🔐 CHECK: user permission (VERY IMPORTANT)
+    if not await bot_can_promote(chat, sender.id, context):
+        await update.message.reply_text(
+            "❌ Only admins who can add *new admins* are allowed to promote.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # 🤖 CHECK: bot permission
+    if not await bot_can_promote_members(chat, context):
         await update.message.reply_text("❌ I need 'Add Admins' permission.")
         return
-    
+
     try:
-        await update.effective_chat.promote_member(
+        await chat.promote_member(
             user_id=target_user.id,
             can_change_info=True,
             can_delete_messages=True,
             can_invite_users=True,
             can_restrict_members=True,
             can_pin_messages=True,
-            can_promote_members=False,
+            can_promote_members=False,  # 🔒 prevent admin abuse
             can_manage_chat=True,
             can_manage_video_chats=True,
             can_post_messages=True,
             can_edit_messages=True
         )
+
         await update.message.reply_text(
             f"📥 <b>PROMOTED</b> 📥\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -1366,6 +1380,7 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✨ <i>With great power comes great responsibility!</i>",
             parse_mode=ParseMode.HTML
         )
+
     except Exception as e:
         logger.error(f"Promote failed: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Promote failed: {str(e)}")
@@ -1374,17 +1389,42 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @log_command("demote")
 async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Demote admin to member"""
+
+    chat = update.effective_chat
+    sender = update.effective_user
+
     target_user, error = await resolve_target_user(update, context)
     if error:
         await update.message.reply_text(error)
         return
-    
-    if not await bot_can_promote_members(update.effective_chat, context):
+
+    # 🔐 CHECK: sender permission
+    if not await bot_can_promote(chat, sender.id, context):
+        await update.message.reply_text(
+            "❌ Only admins who can add *new admins* are allowed to demote.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # 🤖 CHECK: bot permission
+    if not await bot_can_promote_members(chat, context):
         await update.message.reply_text("❌ I need 'Add Admins' permission.")
         return
-    
+
     try:
-        await update.effective_chat.promote_member(
+        target_member = await chat.get_member(target_user.id)
+
+        # 🚫 Owner cannot be demoted
+        if target_member.status == ChatMember.OWNER:
+            await update.message.reply_text("❌ I can't demote the group owner.")
+            return
+
+        # ℹ️ Already not admin
+        if target_member.status != ChatMember.ADMINISTRATOR:
+            await update.message.reply_text("ℹ️ This user is not an admin.")
+            return
+
+        await chat.promote_member(
             user_id=target_user.id,
             can_change_info=False,
             can_delete_messages=False,
@@ -1397,6 +1437,7 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_post_messages=False,
             can_edit_messages=False
         )
+
         await update.message.reply_text(
             f"📤 <b>DEMOTED</b> 📤\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -1405,6 +1446,7 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📉 <i>Admin powers removed.</i>",
             parse_mode=ParseMode.HTML
         )
+
     except Exception as e:
         logger.error(f"Demote failed: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Demote failed: {str(e)}")
