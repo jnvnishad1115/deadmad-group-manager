@@ -391,12 +391,12 @@ async def bot_can_promote_members(
     context: ContextTypes.DEFAULT_TYPE
 ) -> bool:
     """
-    Check if a user has permission to promote new admins
+    Check if GIVEN USER (admin/owner OR bot) can promote members
     """
     try:
         member = await chat.get_member(user_id)
 
-        # Owner can always promote
+        # Owner always allowed
         if member.status == ChatMember.OWNER:
             return True
 
@@ -408,8 +408,7 @@ async def bot_can_promote_members(
             return True
 
         return False
-
-    except Exception:
+    except:
         return False
 
 async def get_group_admins(chat: Chat, context: ContextTypes.DEFAULT_TYPE) -> List[ChatMember]:
@@ -1010,36 +1009,59 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @log_command("mute")
 async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mute a user"""
+
+    chat = update.effective_chat
+    sender = update.effective_user
+
     target_user, error = await resolve_target_user(update, context)
     if error:
         await update.message.reply_text(error)
         return
-    
-    if target_user.id == config.admin_id:
-        await update.message.reply_text("❌ Cannot mute bot owner.")
+
+    # 🔒 Sender permission check
+    sender_member = await chat.get_member(sender.id)
+    if (
+        sender_member.status != ChatMember.OWNER
+        and not sender_member.can_restrict_members
+    ):
+        await update.message.reply_text(
+            "❌ You need *Restrict Members* permission to mute users.",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
-    
-    if await is_admin(update.effective_chat, target_user.id):
+
+    target_member = await chat.get_member(target_user.id)
+
+    # 🚫 Protect group owner
+    if target_member.status == ChatMember.OWNER:
+        await update.message.reply_text("❌ Cannot mute the group owner.")
+        return
+
+    # 🚫 Protect admins
+    if target_member.status == ChatMember.ADMINISTRATOR:
         await update.message.reply_text("❌ Cannot mute an admin.")
         return
-    
-    if not await bot_can_restrict_members(update.effective_chat, context):
+
+    # 🤖 Bot permission check
+    if not await bot_can_restrict_members(chat, context):
         await update.message.reply_text("❌ I need 'Restrict Members' permission.")
         return
-    
+
     try:
-        chat = update.effective_chat
-        
         time_arg = context.args[1] if len(context.args) > 1 else None
         duration_seconds = parse_time_string(time_arg)
-        until_date = datetime.now(timezone.utc) + timedelta(seconds=duration_seconds) if duration_seconds else None
-        
+
+        until_date = (
+            datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)
+            if duration_seconds else None
+        )
+
         await chat.restrict_member(
             user_id=target_user.id,
             permissions=ChatPermissions(can_send_messages=False),
             until_date=until_date
         )
-        
+
         await mongo.db.users.update_one(
             {"id": target_user.id},
             {"$set": {
@@ -1051,25 +1073,31 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }},
             upsert=True
         )
-        
+
         duration_text = format_duration(duration_seconds) if duration_seconds else "permanently"
+
         await update.message.reply_text(
-            f"🔇 <b>MUTED</b> 🔇\n\n"
+            f"🔇 <b>MUTED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
             f"👤 <b>User:</b> {get_user_mention(target_user)}\n"
             f"⏳ <b>Duration:</b> {duration_text}\n\n"
             f"🤫 <i>Silence is golden.</i>",
             parse_mode=ParseMode.HTML
         )
+
     except Exception as e:
         logger.error(f"Mute failed: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Failed to mute: {str(e)}")
-
+        await update.message.reply_text("❌ Failed to mute user.")
+        
 @admin_only()
 @log_command("unmute")
 async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Unmute a user"""
+
     chat = update.effective_chat
-    
+    sender = update.effective_user
+
+    # 🔍 Resolve target
     if context.args and context.args[0].isdigit():
         user_id = int(context.args[0])
     else:
@@ -1078,7 +1106,36 @@ async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(error)
             return
         user_id = target_user.id
-    
+
+    # 🔐 Sender permission check
+    sender_member = await chat.get_member(sender.id)
+    if (
+        sender_member.status != ChatMember.OWNER
+        and not sender_member.can_restrict_members
+    ):
+        await update.message.reply_text(
+            "❌ You need *Restrict Members* permission to unmute users.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    target_member = await chat.get_member(user_id)
+
+    # 🚫 Protect group owner
+    if target_member.status == ChatMember.OWNER:
+        await update.message.reply_text("❌ Cannot unmute the group owner.")
+        return
+
+    # 🚫 Protect admins
+    if target_member.status == ChatMember.ADMINISTRATOR:
+        await update.message.reply_text("❌ Admins cannot be muted/unmuted.")
+        return
+
+    # 🤖 Bot permission check
+    if not await bot_can_restrict_members(chat, context):
+        await update.message.reply_text("❌ I need 'Restrict Members' permission.")
+        return
+
     try:
         await chat.restrict_member(
             user_id=user_id,
@@ -1090,63 +1147,105 @@ async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 can_add_web_page_previews=True
             )
         )
+
         await mongo.db.users.update_one(
             {"id": user_id},
             {"$unset": {f"muted_in.{chat.id}": ""}}
         )
+
         await update.message.reply_text(
-            f"🔊 <b>UNMUTED</b> 🔊\n"
+            f"🔊 <b>UNMUTED</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"👤 <b>User ID:</b> {user_id}\n"
             f"✅ <i>Voice restored!</i>",
             parse_mode=ParseMode.HTML
         )
+
     except Exception as e:
         logger.error(f"Unmute failed: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Failed to unmute: {str(e)}")
+        await update.message.reply_text("❌ Failed to unmute user.")
 
 @admin_only()
 @log_command("kick")
 async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kick a user"""
+    """Kick a user or self-kick if non-admin tries"""
+
+    chat = update.effective_chat
+    sender = update.effective_user
+
+    # 🔐 BOT permission check FIRST
+    if not await bot_can_restrict_members(chat, context):
+        await update.message.reply_text("❌ I need 'Restrict Members' permission.")
+        return
+
+    # 🔍 Check sender status
+    sender_member = await chat.get_member(sender.id)
+
+    # 🚨 NON-ADMIN USED /kick → SELF KICK
+    if sender_member.status not in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):
+        try:
+            await chat.ban_member(user_id=sender.id)
+            await asyncio.sleep(0.5)
+            await chat.unban_member(user_id=sender.id)
+
+            await update.message.reply_text(
+                f"🚫 <b>SELF KICKED</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>User:</b> {get_user_mention(sender)}\n"
+                f"⚠️ <i>Members are not allowed to use /kick.</i>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Self-kick failed: {e}", exc_info=True)
+        return
+
+    # ─────────────────────────────────────────
+    # ADMIN / OWNER LOGIC BELOW
+    # ─────────────────────────────────────────
+
     target_user, error = await resolve_target_user(update, context)
     if error:
         await update.message.reply_text(error)
         return
-    
+
+    # 🚫 Protect bot owner
     if target_user.id == config.admin_id:
         await update.message.reply_text("❌ Cannot kick bot owner.")
         return
-    
-    if await is_admin(update.effective_chat, target_user.id):
+
+    target_member = await chat.get_member(target_user.id)
+
+    # 🚫 Protect owner
+    if target_member.status == ChatMember.OWNER:
+        await update.message.reply_text("❌ Cannot kick the group owner.")
+        return
+
+    # 🚫 Protect admins
+    if target_member.status == ChatMember.ADMINISTRATOR:
         await update.message.reply_text("❌ Cannot kick an admin.")
         return
-    
-    if not await bot_can_restrict_members(update.effective_chat, context):
-        await update.message.reply_text("❌ I need 'Restrict Members' permission.")
-        return
-    
+
     try:
-        chat = update.effective_chat
-        
         reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason provided"
         if update.message.reply_to_message:
             reason = " ".join(context.args) if context.args else "No reason provided"
-        
+
         await chat.ban_member(user_id=target_user.id)
         await asyncio.sleep(0.5)
         await chat.unban_member(user_id=target_user.id)
-        
+
         await update.message.reply_text(
-            f"👢 <b>KICKED</b> 👢\n\n"
+            f"👢 <b>KICKED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
             f"👤 <b>User:</b> {get_user_mention(target_user)}\n"
             f"📝 <b>Reason:</b> {escape_html(reason)}\n\n"
-            f"👋 <i>See you later!</i>",
+            f"⚖️ <i>Action by Admin</i>",
             parse_mode=ParseMode.HTML
         )
+
     except Exception as e:
         logger.error(f"Kick failed: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Failed to kick: {str(e)}")
+        await update.message.reply_text("❌ Failed to kick user.")
 
 @admin_only()
 @log_command("purge")
@@ -1334,8 +1433,6 @@ async def view_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only()
 @log_command("promote")
 async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Promote user to admin"""
-
     chat = update.effective_chat
     sender = update.effective_user
 
@@ -1344,16 +1441,16 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(error)
         return
 
-    # 🔐 CHECK: user permission (VERY IMPORTANT)
-    if not await bot_can_promote(chat, sender.id, context):
+    # 🔐 CHECK: COMMAND SENDER
+    if not await bot_can_promote_members(chat, sender.id, context):
         await update.message.reply_text(
             "❌ Only admins who can add *new admins* are allowed to promote.",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
-    # 🤖 CHECK: bot permission
-    if not await bot_can_promote_members(chat, context):
+    # 🤖 CHECK: BOT ITSELF
+    if not await bot_can_promote_members(chat, context.bot.id, context):
         await update.message.reply_text("❌ I need 'Add Admins' permission.")
         return
 
@@ -1365,7 +1462,7 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_invite_users=True,
             can_restrict_members=True,
             can_pin_messages=True,
-            can_promote_members=False,  # 🔒 prevent admin abuse
+            can_promote_members=False,  # 🔒 anti admin-chain
             can_manage_chat=True,
             can_manage_video_chats=True,
             can_post_messages=True,
@@ -1373,23 +1470,18 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await update.message.reply_text(
-            f"📥 <b>PROMOTED</b> 📥\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>User:</b> {get_user_mention(target_user)}\n"
-            f"💎 <b>Status:</b> <b>Admin</b>\n\n"
-            f"✨ <i>With great power comes great responsibility!</i>",
+            f"📥 <b>PROMOTED</b>\n"
+            f"👤 {get_user_mention(target_user)} → <b>Admin</b>",
             parse_mode=ParseMode.HTML
         )
 
     except Exception as e:
         logger.error(f"Promote failed: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Promote failed: {str(e)}")
-
+        await update.message.reply_text("❌ Promote failed.")
+        
 @admin_only()
 @log_command("demote")
 async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Demote admin to member"""
-
     chat = update.effective_chat
     sender = update.effective_user
 
@@ -1398,30 +1490,28 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(error)
         return
 
-    # 🔐 CHECK: sender permission
-    if not await bot_can_promote(chat, sender.id, context):
+    # 🔐 CHECK: COMMAND SENDER
+    if not await bot_can_promote_members(chat, sender.id, context):
         await update.message.reply_text(
             "❌ Only admins who can add *new admins* are allowed to demote.",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
-    # 🤖 CHECK: bot permission
-    if not await bot_can_promote_members(chat, context):
+    # 🤖 CHECK: BOT ITSELF
+    if not await bot_can_promote_members(chat, context.bot.id, context):
         await update.message.reply_text("❌ I need 'Add Admins' permission.")
         return
 
     try:
         target_member = await chat.get_member(target_user.id)
 
-        # 🚫 Owner cannot be demoted
         if target_member.status == ChatMember.OWNER:
-            await update.message.reply_text("❌ I can't demote the group owner.")
+            await update.message.reply_text("❌ Cannot demote the group owner.")
             return
 
-        # ℹ️ Already not admin
         if target_member.status != ChatMember.ADMINISTRATOR:
-            await update.message.reply_text("ℹ️ This user is not an admin.")
+            await update.message.reply_text("ℹ️ User is not an admin.")
             return
 
         await chat.promote_member(
@@ -1439,17 +1529,14 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await update.message.reply_text(
-            f"📤 <b>DEMOTED</b> 📤\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>User:</b> {get_user_mention(target_user)}\n"
-            f"❌ <b>Status:</b> <b>Member</b>\n\n"
-            f"📉 <i>Admin powers removed.</i>",
+            f"📤 <b>DEMOTED</b>\n"
+            f"👤 {get_user_mention(target_user)} → <b>Member</b>",
             parse_mode=ParseMode.HTML
         )
 
     except Exception as e:
         logger.error(f"Demote failed: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Demote failed: {str(e)}")
+        await update.message.reply_text("❌ Demote failed.")
 
 
 async def handle_all_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3053,7 +3140,7 @@ async def _send_leaderboard(chat: Chat, message: Message, timeframe: str, edit: 
                     member = await chat.get_member(user_id)
                     name = escape_html(member.user.first_name)
             except:
-                name = f"User({user_id})"
+                name = f"User({user_name})"
             
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"<code>{i}.</code>")
             board_text += f"{medal} {name} — <b>{count:,}</b> ({percentage:.1f}%)\n"
