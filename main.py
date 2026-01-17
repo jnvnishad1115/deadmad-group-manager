@@ -385,13 +385,31 @@ async def bot_can_restrict_members(chat: Chat, context: ContextTypes.DEFAULT_TYP
     except:
         return False
 
-async def bot_can_promote_members(chat: Chat, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check bot promotion permissions"""
+async def bot_can_promote_members(
+    chat: Chat,
+    user_id: int,
+    context: ContextTypes.DEFAULT_TYPE
+) -> bool:
+    """
+    Check if a user has permission to promote new admins
+    """
     try:
-        bot_member = await chat.get_member(context.bot.id)
-        return (bot_member.status == ChatMember.ADMINISTRATOR and 
-                bot_member.can_promote_members)
-    except:
+        member = await chat.get_member(user_id)
+
+        # Owner can always promote
+        if member.status == ChatMember.OWNER:
+            return True
+
+        # Admin must have promote permission
+        if (
+            member.status == ChatMember.ADMINISTRATOR
+            and member.can_promote_members
+        ):
+            return True
+
+        return False
+
+    except Exception:
         return False
 
 async def get_group_admins(chat: Chat, context: ContextTypes.DEFAULT_TYPE) -> List[ChatMember]:
