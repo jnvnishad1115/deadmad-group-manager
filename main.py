@@ -2807,8 +2807,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("➕ Add me to a Group", url=f"https://t.me/{context.bot.username}?startgroup=true"),
         ],
         [
-            InlineKeyboardButton("❓ Help", callback_data="lb_help"),
-            InlineKeyboardButton("ℹ️ Bot Information", callback_data="lb_info"),
+            InlineKeyboardButton("❓ Help", callback_data="help_menu"),
+            InlineKeyboardButton("ℹ️ Bot Information", callback_data="bot_info"),
         ]
     ]
     
@@ -3226,6 +3226,104 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.message.delete()
         except:
             pass
+        return
+
+    # HELP BUTTON
+    if data == "help_menu":
+        await query.message.edit_text(
+            help_text := (
+        "❖════════════════════════❖\n"
+            "  🤖 <b>HELP & USER GUIDE</b>\n"
+        "❖════════════════════════❖\n\n"
+
+        "👋 <b>Welcome!</b>\n"
+        "This bot helps you manage your group with powerful moderation, "
+        "security tools, and automation.\n\n"
+
+        "📌 <b>HOW TO GET STARTED</b>\n"
+        "• Add the bot to a <b>Supergroup</b>\n"
+        "• Promote it as <b>Admin</b>\n"
+        "• Open <code>/settings</code> to configure features\n\n"
+
+        "🧭 <b>COMMON COMMANDS</b>\n"
+        "• <code>/help</code> — Full command list\n"
+        "• <code>/rules</code> — View group rules\n"
+        "• <code>/id</code> — Get user & group ID\n"
+        "• <code>/leaderboard</code> — Active members\n"
+        "• <code>/stats</code> — Group statistics\n\n"
+
+        "🛡️ <b>SECURITY & MODERATION</b>\n"
+        "• Anti-Flood protection\n"
+        "• Auto-Moderation (links, swears)\n"
+        "• CAPTCHA for new members\n"
+        "• Warnings, mute, kick & ban system\n\n"
+
+        "👑 <b>ADMIN TOOLS</b>\n"
+        "• <code>/settings</code> — Control all features\n"
+        "• <code>/warn</code>, <code>/mute</code>, <code>/ban</code>\n"
+        "• Welcome & Goodbye messages\n"
+        "• Notes & auto-reply filters\n\n"
+
+        "⚙️ <b>SMART FEATURES</b>\n"
+        "• Inline settings panel\n"
+        "• Admin tagging (@admin / @all)\n"
+        "• Polls, quizzes & dice\n"
+        "• Activity leaderboard\n\n"
+
+        "💡 <i>Tip:</i> Use inline buttons for faster control.\n\n"
+
+        "✨ <b>Secure • Fast • Production-Ready</b>\n"
+        "❖════════════════════════❖"
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Back", callback_data="start_back")]
+            ])
+        )
+        return
+
+
+    # BOT INFO BUTTON
+    if data == "bot_info":
+        await query.message.edit_text(
+            (
+    "❖════════════════════════❖\n"
+          "  🤖 <b>BOT INFORMATION</b>\n"
+    "❖════════════════════════❖\n\n"
+
+    "🛡️ <b>All-in-One Group Manager</b>\n"
+    "Designed to keep your community safe, clean, and active.\n\n"
+
+    "🚀 <b>CORE FEATURES</b>\n"
+    "• Advanced Anti-Spam & Anti-Flood\n"
+    "• Smart Auto-Moderation System\n"
+    "• CAPTCHA Verification for New Users\n"
+    "• Warning, Mute, Kick & Ban Engine\n\n"
+
+    "⚙️ <b>ADMIN POWER TOOLS</b>\n"
+    "• Inline Settings Panel\n"
+    "• Welcome & Goodbye Automation\n"
+    "• Notes, Filters & Auto-Replies\n"
+    "• Polls, Quizzes & Leaderboards\n\n"
+
+    "📊 <b>INTELLIGENCE</b>\n"
+    "• User Activity Tracking\n"
+    "• Group Statistics & Logs\n"
+    "• CSV Export & Insights\n\n"
+
+    "🔐 <b>BUILT FOR SCALE</b>\n"
+    "• Secure Database-Backed System\n"
+    "• Optimized for High-Traffic Groups\n"
+    "• Production-Ready Architecture\n\n"
+
+    "✨ <b>Secure</b> • ⚡ <b>Fast</b> • 🧠 <b>Smart</b>\n"
+    "❖════════════════════════❖"
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Back", callback_data="start_back")]
+            ])
+        )
         return
     
     if data.startswith("lb_"):
