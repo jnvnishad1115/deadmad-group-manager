@@ -973,14 +973,33 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ban failed: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Failed to ban: {str(e)}")
 
+# =============================================================================
+# FIXED: /unban command - Added permission checks and better error handling
+# =============================================================================
 @admin_only()
 @log_command("unban")
 async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Unban a user"""
     chat = update.effective_chat
+    sender = update.effective_user
     
+    # Check sender permissions FIRST
+    sender_member = await chat.get_member(sender.id)
+    if sender_member.status not in [ChatMember.OWNER, ChatMember.ADMINISTRATOR]:
+        await update.message.reply_text("❌ You must be an admin to use this command.")
+        return
+    
+    if sender_member.status == ChatMember.ADMINISTRATOR and not sender_member.can_restrict_members:
+        await update.message.reply_text(
+            "❌ You need <b>Restrict Members</b> permission to unban users.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    # Resolve target
     if context.args and context.args[0].isdigit():
         user_id = int(context.args[0])
+        target_user = User(id=user_id, first_name=f"User {user_id}", is_bot=False)
     else:
         target_user, error = await resolve_target_user(update, context)
         if error:
@@ -988,22 +1007,37 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         user_id = target_user.id
     
+    # Check bot permissions
+    if not await bot_can_restrict_members(chat, context):
+        await update.message.reply_text("❌ I need 'Restrict Members' permission.")
+        return
+    
     try:
-        await chat.unban_member(user_id=user_id)
+        # Use context.bot.unban_chat_member for clarity
+        await context.bot.unban_chat_member(
+            chat_id=chat.id,
+            user_id=user_id,
+            only_if_banned=True  # Don't error if user is not banned
+        )
+        
         await mongo.db.users.update_one(
             {"id": user_id},
             {"$unset": {f"banned_in.{chat.id}": ""}}
         )
+        
+        # Better success message
+        mention = get_user_mention(target_user) if target_user.username else f"<code>{user_id}</code>"
         await update.message.reply_text(
             f"✅ <b>UNBANNED</b> ✅\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>User ID:</b> {user_id}\n"
-            f"🔓 <i>Access restored!</i>",
+            f"👤 <b>User:</b> {mention}\n"
+            f"🔓 <i>Access restored - they can now rejoin the group.</i>",
             parse_mode=ParseMode.HTML
         )
+        
     except Exception as e:
         logger.error(f"Unban failed: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Failed to unban: {str(e)}")
+        await update.message.reply_text(f"❌ Failed to unban user: {str(e)}")
 
 @admin_only()
 @log_command("mute")
@@ -1089,54 +1123,70 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Mute failed: {e}", exc_info=True)
         await update.message.reply_text("❌ Failed to mute user.")
         
+# =============================================================================
+# FIXED: /unmute command - Fixed parse mode, added permission checks and exception handling
+# =============================================================================
 @admin_only()
 @log_command("unmute")
 async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Unmute a user"""
-
     chat = update.effective_chat
     sender = update.effective_user
-
-    # 🔍 Resolve target
+    
+    # Resolve target user
     if context.args and context.args[0].isdigit():
         user_id = int(context.args[0])
+        # Create user object without fetching member (might fail if left group)
+        target_user = User(id=user_id, first_name=f"User {user_id}", is_bot=False)
     else:
         target_user, error = await resolve_target_user(update, context)
         if error:
             await update.message.reply_text(error)
             return
         user_id = target_user.id
-
-    # 🔐 Sender permission check
+    
+    # Check sender permissions first
     sender_member = await chat.get_member(sender.id)
-    if (
-        sender_member.status != ChatMember.OWNER
-        and not sender_member.can_restrict_members
-    ):
+    if sender_member.status not in [ChatMember.OWNER, ChatMember.ADMINISTRATOR]:
+        await update.message.reply_text("❌ You must be an admin to use this command.")
+        return
+    
+    if sender_member.status == ChatMember.ADMINISTRATOR and not sender_member.can_restrict_members:
+        # Use HTML instead of Markdown
         await update.message.reply_text(
-            "❌ You need *Restrict Members* permission to unmute users.",
-            parse_mode=ParseMode.MARKDOWN
+            "❌ You need <b>Restrict Members</b> permission to unmute users.",
+            parse_mode=ParseMode.HTML
         )
         return
-
-    target_member = await chat.get_member(user_id)
-
-    # 🚫 Protect group owner
-    if target_member.status == ChatMember.OWNER:
-        await update.message.reply_text("❌ Cannot unmute the group owner.")
-        return
-
-    # 🚫 Protect admins
-    if target_member.status == ChatMember.ADMINISTRATOR:
-        await update.message.reply_text("❌ Admins cannot be muted/unmuted.")
-        return
-
-    # 🤖 Bot permission check
+    
+    # Try to get member info but handle if user left
+    try:
+        target_member = await chat.get_member(user_id)
+        # Check protections
+        if target_member.status == ChatMember.OWNER:
+            await update.message.reply_text("❌ Cannot unmute the group owner.")
+            return
+        if target_member.status == ChatMember.ADMINISTRATOR:
+            await update.message.reply_text("❌ Admins cannot be muted/unmuted.")
+            return
+    except:
+        # User not in chat (likely left or was banned), proceed anyway
+        pass
+    
+    # Check bot permissions
     if not await bot_can_restrict_members(chat, context):
         await update.message.reply_text("❌ I need 'Restrict Members' permission.")
         return
-
+    
     try:
+        # Use telegram's unban_chat_member which also unmutes
+        await context.bot.unban_chat_member(
+            chat_id=chat.id,
+            user_id=user_id,
+            only_if_banned=True  # Don't fail if not muted
+        )
+        
+        # Alternative approach - explicitly set full permissions
         await chat.restrict_member(
             user_id=user_id,
             permissions=ChatPermissions(
@@ -1147,23 +1197,25 @@ async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 can_add_web_page_previews=True
             )
         )
-
+        
         await mongo.db.users.update_one(
             {"id": user_id},
             {"$unset": {f"muted_in.{chat.id}": ""}}
         )
-
+        
+        # Better success message with mention if available
+        mention = get_user_mention(target_user) if target_user.username else f"<code>{user_id}</code>"
         await update.message.reply_text(
             f"🔊 <b>UNMUTED</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>User ID:</b> {user_id}\n"
+            f"👤 <b>User:</b> {mention}\n"
             f"✅ <i>Voice restored!</i>",
             parse_mode=ParseMode.HTML
         )
-
+        
     except Exception as e:
         logger.error(f"Unmute failed: {e}", exc_info=True)
-        await update.message.reply_text("❌ Failed to unmute user.")
+        await update.message.reply_text(f"❌ Failed to unmute user: {str(e)}")
 
 @admin_only()
 @log_command("kick")
@@ -2332,6 +2384,9 @@ async def send_goodbye_message(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"Failed to send goodbye: {e}", exc_info=True)
 
+# =============================================================================
+# FIXED: /setwelcome command - Fixed IndexError by using context.args
+# =============================================================================
 @admin_only()
 async def set_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set welcome message"""
@@ -2343,7 +2398,9 @@ async def set_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     chat = update.effective_chat
-    welcome_text = update.message.text_html.split(None, 1)[1]
+    
+    # FIXED: Build text from args instead of splitting message text
+    welcome_text = " ".join(context.args)
     
     try:
         await mongo.db.groups.update_one(
@@ -2391,9 +2448,7 @@ async def toggle_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set goodbye message"""
     if not context.args:
-        await update.message.reply_text(
-            "❌ Provide goodbye message.\nVariables: {user_name}, {user_mention}"
-        )
+        await update.message.reply_text("❌ Provide goodbye message.\nVariables: {user_name}, {user_mention}")
         return
     
     chat = update.effective_chat
@@ -3140,7 +3195,7 @@ async def _send_leaderboard(chat: Chat, message: Message, timeframe: str, edit: 
                     member = await chat.get_member(user_id)
                     name = escape_html(member.user.first_name)
             except:
-                name = f"User({user_name})"
+                name = f"User({user_id})"
             
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"<code>{i}.</code>")
             board_text += f"{medal} {name} — <b>{count:,}</b> ({percentage:.1f}%)\n"
