@@ -45,8 +45,8 @@ class BotConfig(BaseSettings):
     """Secure configuration from environment variables"""
 
     # REQUIRED (NO DEFAULTS FOR SECRETS)
-    bot_token: str = "8516871461:AAHb9lyOJQNAB1cW6MEYv6Ty7SRlEHHvZP4"
-    admin_id: int = 407295878
+    bot_token: str = "8655106514:AAEZVgzb4WcGzU52gum_YWIayElEfEwG6YQ"
+    admin_id: int = 8327371312
     mongodb_uri: str =  "mongodb+srv://mefirebase1115_db_user:f76qFi3OqJQsagU2@cluster0.wsppssu.mongodb.net/?appName=Cluster0"
 
     # Optional with defaults
